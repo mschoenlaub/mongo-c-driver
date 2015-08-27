@@ -242,14 +242,14 @@ LIBMONGOC_1.1 {
         mongoc_stream_write;
         mongoc_uri_get_credentials;
         mongoc_uri_get_mechanism_properties;
-        mongoc_client_pool_max_size;
-        mongoc_client_pool_min_size;
 } LIBMONGOC_1.0;
 
 LIBMONGOC_1.2 {
     global:
         mongoc_client_get_default_database;
         mongoc_bulk_operation_get_write_concern;
+        mongoc_client_pool_max_size;
+        mongoc_client_pool_min_size;
         mongoc_server_description_destroy;
         mongoc_server_description_host;
         mongoc_server_description_id;
