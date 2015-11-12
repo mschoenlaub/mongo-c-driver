@@ -1,10 +1,9 @@
 # norootforbuild
 
 %define DriverName    mongo-c-driver
-%define DriverVersion 1.1.10
+%define DriverVersion 1.2.1
 %define BsonName      libbson
-%define BsonVersion   1.1.10
-
+%define BsonVersion   1.2.1
 Name:           %{DriverName}
 Version:        %{DriverVersion}
 Release:        1%{?dist}
@@ -24,9 +23,7 @@ BuildRequires:  pkgconfig
 %description
 mongo-c-driver is a library for building high-performance
 applications that communicate with the MongoDB NoSQL
-database in the C language. It can also be used to write
-fast client implementations in languages such as Python,
-Ruby, or Perl.
+database in the C language.
 
 
 %package devel
@@ -117,6 +114,15 @@ find $RPM_BUILD_ROOT -name '*.la' -exec rm -f {} ';'
 
 
 %changelog -n %{DriverName}
+* Thu October 29 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.2.1-1
+- Release 1.2.1
+
+* Tue October 13 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.2.0-1
+- Release 1.2.0
+
+* Wed September 23 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.1.11-1
+- Release 1.1.11
+
 * Tue July 21 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.1.10-1
 - Release 1.1.10
 
@@ -194,6 +200,15 @@ find $RPM_BUILD_ROOT -name '*.la' -exec rm -f {} ';'
 
 
 %changelog -n %{BsonName}
+* Thu October 29 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.2.1-1
+- Release 1.2.1
+
+* Tue October 13 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.2.0-1
+- Release 1.2.0
+
+* Wed September 23 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.1.11-1
+- Release 1.1.11
+
 * Tue July 21 2015 A. Jesse Jiryu Davis <jesse@mongodb.com> - 1.1.10-1
 - Release 1.1.10
 

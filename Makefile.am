@@ -15,6 +15,12 @@ endif
 AM_CTAGSFLAGS = --fields=+l --languages=c
 
 include doc/Makefile.am
+if ENABLE_MAN_PAGES
+include doc/man/Makefile.am
+endif
+if ENABLE_HTML_DOCS
+include doc/html/Makefile.am
+endif
 include src/Makefile.am
 
 if ENABLE_TESTS
@@ -29,7 +35,7 @@ endif
 include build/cmake/Makefile.am
 
 ACLOCAL_AMFLAGS = -I build/autotools/m4 ${ACLOCAL_FLAGS}
-DISTCHECK_CONFIGURE_FLAGS = --enable-silent-rules --enable-man-pages --enable-html-doc --enable-sasl --enable-ssl --enable-maintainer-flags --enable-debug --with-libbson=bundled
+DISTCHECK_CONFIGURE_FLAGS = --enable-silent-rules --enable-man-pages --enable-html-docs --enable-sasl --enable-ssl --enable-maintainer-flags --enable-debug --with-libbson=bundled
 
 mongocdocdir = ${docdir}
 mongocdoc_DATA = \
@@ -45,7 +51,7 @@ EXTRA_DIST += \
 dist-hook:
 	@if test -d "$(srcdir)/.git"; then                              \
           (cd "$(srcdir)" &&                                            \
-           $(top_srcdir)/missing --run git log --stat ) > ChangeLog.tmp \
+           $(top_srcdir)/build/autotools/missing --run git log --stat ) > ChangeLog.tmp \
            && mv -f ChangeLog.tmp $(top_distdir)/ChangeLog              \
            || (rm -f ChangeLog.tmp;                                     \
                echo Failed to generate ChangeLog >&2);                  \

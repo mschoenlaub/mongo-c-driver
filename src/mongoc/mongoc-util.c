@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "mongoc-util-private.h"
+#include "mongoc-client.h"
 
 
 char *
@@ -38,4 +39,69 @@ _mongoc_hex_md5 (const char *input)
    digest_str[sizeof digest_str - 1] = '\0';
 
    return bson_strdup(digest_str);
+}
+
+
+void
+_mongoc_usleep (int64_t usec)
+{
+#ifdef _WIN32
+   LARGE_INTEGER ft;
+   HANDLE timer;
+
+   BSON_ASSERT (usec >= 0);
+
+   ft.QuadPart = -(10 * usec);
+   timer = CreateWaitableTimer(NULL, true, NULL);
+   SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);
+   WaitForSingleObject(timer, INFINITE);
+   CloseHandle(timer);
+#else
+   BSON_ASSERT (usec >= 0);
+   usleep ((useconds_t) usec);
+#endif
+}
+
+
+const char *
+_mongoc_get_command_name (const bson_t *command)
+{
+   bson_iter_t iter;
+
+   BSON_ASSERT (command);
+
+   if (!bson_iter_init (&iter, command) ||
+       !bson_iter_next (&iter)) {
+      return NULL;
+   }
+
+   return bson_iter_key (&iter);
+}
+
+
+void
+_mongoc_get_db_name (const char *ns,
+                     char *db /* OUT */)
+{
+   size_t dblen;
+   const char *dot;
+
+   BSON_ASSERT (ns);
+
+   dot = strstr (ns, ".");
+
+   if (dot) {
+      dblen = BSON_MIN (dot - ns + 1, MONGOC_NAMESPACE_MAX);
+      bson_strncpy (db, ns, dblen);
+   } else {
+      bson_strncpy (db, ns, MONGOC_NAMESPACE_MAX);
+   }
+}
+
+void
+_mongoc_bson_destroy_if_set (bson_t *bson)
+{
+   if (bson) {
+      bson_destroy (bson);
+   }
 }
