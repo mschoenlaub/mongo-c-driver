@@ -37,6 +37,7 @@
 #include "mongoc-thread-private.h"
 #include "mongoc-trace.h"
 #include "mongoc-uri-private.h"
+#include "mongoc-util-private.h"
 
 #ifdef MONGOC_ENABLE_SSL
 #include "mongoc-stream-tls.h"
@@ -46,6 +47,20 @@
 
 #undef MONGOC_LOG_DOMAIN
 #define MONGOC_LOG_DOMAIN "client"
+
+
+static void
+_mongoc_client_op_killcursors (mongoc_cluster_t       *cluster,
+                               mongoc_server_stream_t *server_stream,
+                               int64_t                 cursor_id);
+
+static void
+_mongoc_client_killcursors_command (mongoc_cluster_t       *cluster,
+                                    mongoc_server_stream_t *server_stream,
+                                    int64_t                 cursor_id,
+                                    const char             *db,
+                                    const char             *collection);
+
 
 
 /*
@@ -706,9 +721,17 @@ _mongoc_client_new_from_uri (const mongoc_uri_t *uri, mongoc_topology_t *topolog
 {
    mongoc_client_t *client;
    const mongoc_read_prefs_t *read_prefs;
+   const mongoc_read_concern_t *read_concern;
    const mongoc_write_concern_t *write_concern;
 
    BSON_ASSERT (uri);
+
+#ifndef MONGOC_ENABLE_SSL
+   if (mongoc_uri_get_ssl (uri)) {
+      MONGOC_ERROR ("Can't create SSL client, SSL not enabled in this build.");
+      return NULL;
+   }
+#endif
 
    client = (mongoc_client_t *)bson_malloc0(sizeof *client);
    client->uri = mongoc_uri_copy (uri);
@@ -719,6 +742,9 @@ _mongoc_client_new_from_uri (const mongoc_uri_t *uri, mongoc_topology_t *topolog
 
    write_concern = mongoc_uri_get_write_concern (client->uri);
    client->write_concern = mongoc_write_concern_copy (write_concern);
+
+   read_concern = mongoc_uri_get_read_concern (client->uri);
+   client->read_concern = mongoc_read_concern_copy (read_concern);
 
    read_prefs = mongoc_uri_get_read_prefs_t (client->uri);
    client->read_prefs = mongoc_read_prefs_copy (read_prefs);
@@ -768,6 +794,7 @@ mongoc_client_destroy (mongoc_client_t *client)
       }
 
       mongoc_write_concern_destroy (client->write_concern);
+      mongoc_read_concern_destroy (client->read_concern);
       mongoc_read_prefs_destroy (client->read_prefs);
       mongoc_cluster_destroy (&client->cluster);
       mongoc_uri_destroy (client->uri);
@@ -832,7 +859,8 @@ mongoc_client_get_database (mongoc_client_t *client,
    BSON_ASSERT (client);
    BSON_ASSERT (name);
 
-   return _mongoc_database_new(client, name, client->read_prefs, client->write_concern);
+   return _mongoc_database_new(client, name, client->read_prefs,
+                               client->read_concern, client->write_concern);
 }
 
 
@@ -907,7 +935,7 @@ mongoc_client_get_collection (mongoc_client_t *client,
    BSON_ASSERT (collection);
 
    return _mongoc_collection_new(client, db, collection, client->read_prefs,
-                                 client->write_concern);
+                                 client->read_concern, client->write_concern);
 }
 
 
@@ -1012,6 +1040,64 @@ mongoc_client_set_write_concern (mongoc_client_t              *client,
 /*
  *--------------------------------------------------------------------------
  *
+ * mongoc_client_get_read_concern --
+ *
+ *       Fetches the default read concern for @client.
+ *
+ * Returns:
+ *       A mongoc_read_concern_t that should not be modified or freed.
+ *
+ * Side effects:
+ *       None.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+const mongoc_read_concern_t *
+mongoc_client_get_read_concern (const mongoc_client_t *client)
+{
+   BSON_ASSERT (client);
+
+   return client->read_concern;
+}
+
+
+/*
+ *--------------------------------------------------------------------------
+ *
+ * mongoc_client_set_read_concern --
+ *
+ *       Sets the default read concern for @client.
+ *
+ * Returns:
+ *       None.
+ *
+ * Side effects:
+ *       None.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+void
+mongoc_client_set_read_concern (mongoc_client_t             *client,
+                                const mongoc_read_concern_t *read_concern)
+{
+   BSON_ASSERT (client);
+
+   if (read_concern != client->read_concern) {
+      if (client->read_concern) {
+         mongoc_read_concern_destroy (client->read_concern);
+      }
+      client->read_concern = read_concern ?
+         mongoc_read_concern_copy (read_concern) :
+         mongoc_read_concern_new ();
+   }
+}
+
+
+/*
+ *--------------------------------------------------------------------------
+ *
  * mongoc_client_get_read_prefs --
  *
  *       Fetch the default read preferences for @client.
@@ -1096,7 +1182,7 @@ mongoc_client_command (mongoc_client_t           *client,
    }
 
    return _mongoc_cursor_new (client, db_name, flags, skip, limit, batch_size,
-                              true, query, fields, read_prefs);
+                              true, query, fields, read_prefs, NULL);
 }
 
 
@@ -1172,10 +1258,11 @@ done:
 void
 _mongoc_client_kill_cursor (mongoc_client_t *client,
                             uint32_t         server_id,
-                            int64_t          cursor_id)
+                            int64_t          cursor_id,
+                            const char      *db,
+                            const char      *collection)
 {
    mongoc_server_stream_t *server_stream;
-   mongoc_rpc_t rpc = {{ 0 }};
 
    ENTRY;
 
@@ -1192,6 +1279,29 @@ _mongoc_client_kill_cursor (mongoc_client_t *client,
       return;
    }
 
+   if (db && collection &&
+       server_stream->sd->max_wire_version >=
+       WIRE_VERSION_KILLCURSORS_CMD) {
+      _mongoc_client_killcursors_command (&client->cluster, server_stream,
+                                          cursor_id, db, collection);
+   } else {
+      _mongoc_client_op_killcursors (&client->cluster,
+                                     server_stream,
+                                     cursor_id);
+   }
+
+   mongoc_server_stream_cleanup (server_stream);
+
+   EXIT;
+}
+
+static void
+_mongoc_client_op_killcursors (mongoc_cluster_t       *cluster,
+                               mongoc_server_stream_t *server_stream,
+                               int64_t                 cursor_id)
+{
+   mongoc_rpc_t rpc = { { 0 } };
+
    rpc.kill_cursors.msg_len = 0;
    rpc.kill_cursors.request_id = 0;
    rpc.kill_cursors.response_to = 0;
@@ -1200,12 +1310,33 @@ _mongoc_client_kill_cursor (mongoc_client_t *client,
    rpc.kill_cursors.cursors = &cursor_id;
    rpc.kill_cursors.n_cursors = 1;
 
-   mongoc_cluster_sendv_to_server (&client->cluster, &rpc, 1, server_stream,
+   mongoc_cluster_sendv_to_server (cluster, &rpc, 1, server_stream,
                                    NULL, NULL);
+}
 
-   mongoc_server_stream_cleanup (server_stream);
+static void
+_mongoc_client_killcursors_command (mongoc_cluster_t       *cluster,
+                                    mongoc_server_stream_t *server_stream,
+                                    int64_t                 cursor_id,
+                                    const char             *db,
+                                    const char             *collection)
+{
+   bson_t command = BSON_INITIALIZER;
+   bson_t child;
 
-   EXIT;
+   bson_append_utf8 (&command, "killCursors", 11, collection, -1);
+   bson_append_array_begin (&command, "cursors", 7, &child);
+   bson_append_int64 (&child, "0", 1, cursor_id);
+   bson_append_array_end (&command, &child);
+
+   /* Find, getMore And killCursors Commands Spec: "The result from the
+    * killCursors command MAY be safely ignored."
+    */
+   mongoc_cluster_run_command (cluster, server_stream->stream,
+                               MONGOC_QUERY_SLAVE_OK, db, &command,
+                               NULL, NULL);
+
+   bson_destroy (&command);
 }
 
 
@@ -1260,7 +1391,9 @@ mongoc_client_kill_cursor (mongoc_client_t *client,
    mongoc_mutex_unlock (&topology->mutex);
 
    if (server_id) {
-      _mongoc_client_kill_cursor (client, selected_server->id, cursor_id);
+      _mongoc_client_kill_cursor (client, selected_server->id, cursor_id,
+                                  NULL /* db */,
+                                  NULL /* collection */);
    } else {
       MONGOC_INFO ("No server available for mongoc_client_kill_cursor");
    }
@@ -1319,7 +1452,7 @@ mongoc_client_find_databases (mongoc_client_t *client,
    BSON_APPEND_INT32 (&cmd, "listDatabases", 1);
 
    cursor = _mongoc_cursor_new (client, "admin", MONGOC_QUERY_SLAVE_OK,
-                                0, 0, 0, true, NULL, NULL, NULL);
+                                0, 0, 0, true, NULL, NULL, NULL, NULL);
 
    _mongoc_cursor_array_init (cursor, &cmd, "databases");
 

@@ -18,12 +18,9 @@
 #include <bson.h>
 
 #include "mongoc-array-private.h"
+#include "mongoc-util-private.h"
 
 #include "test-conveniences.h"
-
-#ifdef _WIN32
-# define strcasecmp _stricmp
-#endif
 
 static bool gConveniencesInitialized = false;
 static mongoc_array_t gTmpBsonArray;
@@ -138,12 +135,6 @@ find (bson_value_t *value,
 static bool
 match_bson_value (const bson_value_t *doc,
                   const bson_value_t *pattern);
-
-static bool
-match_bson (const bson_t *doc,
-            const bson_t *pattern,
-            bool          is_command);
-
 
 /*--------------------------------------------------------------------------
  *
@@ -274,7 +265,7 @@ match_json (const bson_t *doc,
  *--------------------------------------------------------------------------
  */
 
-static bool
+bool
 match_bson (const bson_t *doc,
             const bson_t *pattern,
             bool          is_command)

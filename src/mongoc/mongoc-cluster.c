@@ -51,9 +51,6 @@
 #define MONGOC_LOG_DOMAIN "cluster"
 
 
-#define MIN_WIRE_VERSION 0
-#define MAX_WIRE_VERSION 3
-
 #define CHECK_CLOSED_DURATION_MSEC 1000
 
 #define DB_AND_CMD_FROM_COLLECTION(outstr, name) \
@@ -176,7 +173,7 @@ mongoc_cluster_run_command_rpc (mongoc_cluster_t    *cluster,
 
    memcpy (&msg_len, buffer->data, 4);
    msg_len = BSON_UINT32_FROM_LE(msg_len);
-   if ((msg_len < 16) || (msg_len > (1024 * 1024 * 16))) {
+   if ((msg_len < 16) || (msg_len > MONGOC_DEFAULT_MAX_MSG_SIZE)) {
       GOTO (done);
    }
 
@@ -1094,7 +1091,7 @@ _mongoc_cluster_auth_node (mongoc_cluster_t *cluster,
 
    /* Use cached max_wire_version, not value from sd */
    if (!mechanism) {
-      if (max_wire_version < 3) {
+      if (max_wire_version < WIRE_VERSION_SCRAM_DEFAULT) {
          mechanism = "MONGODB-CR";
       } else {
          mechanism = "SCRAM-SHA-1";
@@ -2161,7 +2158,7 @@ mongoc_cluster_sendv_to_server (mongoc_cluster_t              *cluster,
       need_gle = _mongoc_rpc_needs_gle(&rpcs[i], write_concern);
       _mongoc_rpc_gather (&rpcs[i], &cluster->iov);
 
-      max_msg_size = mongoc_stream_max_msg_size (server_stream);
+      max_msg_size = mongoc_server_stream_max_msg_size (server_stream);
 
       if (rpcs[i].header.msg_len > max_msg_size) {
          bson_set_error(error,
@@ -2297,7 +2294,7 @@ mongoc_cluster_try_recv (mongoc_cluster_t       *cluster,
     */
    memcpy (&msg_len, &buffer->data[buffer->off + pos], 4);
    msg_len = BSON_UINT32_FROM_LE (msg_len);
-   max_msg_size = mongoc_stream_max_msg_size (server_stream);
+   max_msg_size = mongoc_server_stream_max_msg_size (server_stream);
    if ((msg_len < 16) || (msg_len > max_msg_size)) {
       bson_set_error (error,
                       MONGOC_ERROR_PROTOCOL,

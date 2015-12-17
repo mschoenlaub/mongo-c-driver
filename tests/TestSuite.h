@@ -71,6 +71,8 @@ extern "C" {
 #define ASSERT_CMPULONG(a, eq, b)  ASSERT_CMPINT_HELPER(a, eq, b, "lu")
 #define ASSERT_CMPINT64(a, eq, b)  ASSERT_CMPINT_HELPER(a, eq, b, PRId64)
 #define ASSERT_CMPUINT64(a, eq, b) ASSERT_CMPINT_HELPER(a, eq, b, PRIu64)
+#define ASSERT_CMPSIZE_T(a, eq, b) ASSERT_CMPINT_HELPER(a, eq, b, "zd")
+#define ASSERT_CMPSSIZE_T(a, eq, b) ASSERT_CMPINT_HELPER(a, eq, b, "zx")
 
 #define ASSERT_MEMCMP(a, b, n) \
    do { \
@@ -107,6 +109,22 @@ extern "C" {
       if (((a) != (b)) && !!strcmp((a), (b))) { \
          fprintf(stderr, "FAIL\n\nAssert Failure: \"%s\" != \"%s\"\n", \
                          a, b); \
+         abort(); \
+      } \
+   } while (0)
+
+
+#define ASSERT_CMPOID(a, b) \
+   do { \
+      if (bson_oid_compare ((a), (b))) { \
+         char oid_a[25]; \
+         char oid_b[25]; \
+         bson_oid_to_string ((a), oid_a); \
+         bson_oid_to_string ((b), oid_b); \
+         fprintf(stderr, \
+                 "FAIL\n\nAssert Failure: " \
+                 "ObjectId(\"%s\") != ObjectId(\"%s\")\n", \
+                 oid_a, oid_b); \
          abort(); \
       } \
    } while (0)

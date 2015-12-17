@@ -33,6 +33,7 @@
 #include "mongoc-gridfs-file-page-private.h"
 #include "mongoc-iovec.h"
 #include "mongoc-trace.h"
+#include "mongoc-error.h"
 
 static bool
 _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file);
@@ -643,6 +644,44 @@ _mongoc_gridfs_file_flush_page (mongoc_gridfs_file_t *file)
 
 
 /**
+ * _mongoc_gridfs_file_keep_cursor:
+ *
+ *    After a seek, decide if the next read should use the current cursor or
+ *    start a new query.
+ *
+ * Preconditions:
+ *
+ *    file has a cursor and cursor range.
+ *
+ * Side Effects:
+ *
+ *    None.
+ */
+static bool
+_mongoc_gridfs_file_keep_cursor (mongoc_gridfs_file_t *file)
+{
+   uint32_t chunk_no;
+   uint32_t chunks_per_batch;
+
+   if (file->n < 0 || file->chunk_size <= 0) {
+      return false;
+   }
+
+   chunk_no = (uint32_t) file->n;
+   /* server returns roughly 4 MB batches by default */
+   chunks_per_batch = (4 * 1024 * 1024) / (uint32_t) file->chunk_size;
+
+   return (
+      /* cursor is on or before the desired chunk */
+      file->cursor_range[0] <= chunk_no &&
+      /* chunk_no is before end of file */
+      chunk_no <= file->cursor_range[1] &&
+      /* desired chunk is in this batch or next one */
+      chunk_no < file->cursor_range[0] + 2 * chunks_per_batch);
+}
+
+
+/**
  * _mongoc_gridfs_file_refresh_page:
  *
  *    Refresh a GridFS file's underlying page. This recalculates the current
@@ -652,9 +691,6 @@ _mongoc_gridfs_file_flush_page (mongoc_gridfs_file_t *file)
  *    Note that this fetch is unconditional and the page is queried from the
  *    database even if the current page covers the same theoretical chunk.
  *
- * Preconditions:
- *
- *    file->pos is nonnegative.
  *
  * Side Effects:
  *
@@ -663,7 +699,7 @@ _mongoc_gridfs_file_flush_page (mongoc_gridfs_file_t *file)
  *    chunk boundary, a new page is created. We currently DO NOT handle the case
  *    of the file position being far past the end-of-file.
  *
- *    file->n is set based on file->pos.
+ *    file->n is set based on file->pos. file->error is set on error.
  */
 static bool
 _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
@@ -679,7 +715,6 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
    ENTRY;
 
    BSON_ASSERT (file);
-   BSON_ASSERT (file->pos >= 0);
 
    file->n = (int32_t)(file->pos / file->chunk_size);
 
@@ -697,8 +732,7 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
    } else {
       /* if we have a cursor, but the cursor doesn't have the chunk we're going
        * to need, destroy it (we'll grab a new one immediately there after) */
-      if (file->cursor &&
-          (file->n < file->cursor_range[0] || file->n > file->cursor_range[1])) {
+      if (file->cursor && !_mongoc_gridfs_file_keep_cursor (file)) {
          mongoc_cursor_destroy (file->cursor);
          file->cursor = NULL;
       }
@@ -741,7 +775,7 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
        * iterate until we're on the right chunk */
       while (file->cursor_range[0] <= file->n) {
          if (!mongoc_cursor_next (file->cursor, &chunk)) {
-            /* copy cursor error, if any. might just lack a matchign chunk. */
+            /* copy cursor error, if any. might just lack a matching chunk. */
             mongoc_cursor_error (file->cursor, &file->error);
             RETURN (0);
          }
@@ -757,7 +791,11 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
 
          if (strcmp (key, "n") == 0) {
             if (file->n != bson_iter_int32 (&iter)) {
-               /* We're on the wrong chunk because the file is missing chunks */
+               bson_set_error (&file->error,
+                               MONGOC_ERROR_GRIDFS,
+                               MONGOC_ERROR_GRIDFS_CHUNK_MISSING,
+                               "missing chunk number %" PRId32,
+                               file->n);
                RETURN (0);
             }
          } else if (strcmp (key, "data") == 0) {

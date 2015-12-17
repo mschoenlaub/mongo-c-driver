@@ -176,6 +176,7 @@ _test_collection_op_query_or_find_command (
    mongoc_client_t *client;
    mongoc_collection_t *collection;
    mongoc_cursor_t *cursor;
+   bson_error_t error;
    future_t *future;
    request_t *request;
    const bson_t *doc;
@@ -198,6 +199,7 @@ _test_collection_op_query_or_find_command (
                                     test_data->fields_bson,
                                     test_data->read_prefs);
 
+   ASSERT_OR_PRINT (!mongoc_cursor_error (cursor, &error), error);
    future = future_cursor_next (cursor, &doc);
    request = check_request_fn (server, test_data);
    ASSERT (request);
@@ -388,6 +390,22 @@ test_dollar_query (void)
 }
 
 
+static void
+test_dollar_or (void)
+{
+   test_collection_find_t test_data = TEST_COLLECTION_FIND_INIT;
+
+   test_data.docs = "[{'_id': 1}, {'_id': 2}, {'_id': 3}]";
+   test_data.query_input = "{'$or': [{'_id': 1}, {'_id': 3}]}";
+   test_data.expected_op_query = test_data.query_input;
+   test_data.expected_find_command =
+      "{'find': 'collection', 'filter': {'$or': [{'_id': 1}, {'_id': 3}]}}";
+
+   test_data.expected_result = "[{'_id': 1}, {'_id': 3}]";
+   _test_collection_find (&test_data);
+}
+
+
 /* test that we can query for a document by a key named "filter" */
 static void
 test_key_named_filter (void)
@@ -527,40 +545,6 @@ test_int_modifiers (void)
 
 
 static void
-test_bool_modifiers (void)
-{
-   const char *modifiers[] = {
-      "snapshot",
-      "showRecordId",
-   };
-
-   const char *mod;
-   size_t i;
-   char *query;
-   char *find_command;
-   test_collection_find_t test_data = TEST_COLLECTION_FIND_INIT;
-
-   test_data.expected_result = test_data.docs = "[{'_id': 1}]";
-
-   for (i = 0; i < sizeof (modifiers) / sizeof (const char *); i++) {
-      mod = modifiers[i];
-      query = bson_strdup_printf ("{'$query': {}, '$%s': true}", mod);
-
-      /* find command has same modifier, without the $-prefix */
-      find_command = bson_strdup_printf (
-         "{'find': 'collection', 'filter': {}, '%s': true}", mod);
-
-      test_data.expected_op_query = test_data.query_input = query;
-      test_data.expected_find_command = find_command;
-      _test_collection_find (&test_data);
-
-      bson_free (query);
-      bson_free (find_command);
-   }
-}
-
-
-static void
 test_index_spec_modifiers (void)
 {
    /* don't include $max, it needs a slightly different argument to succeed */
@@ -616,6 +600,19 @@ test_max (void)
    test_data.query_input = "{'$query': {}, '$max': {'_id': 100}}";
    test_data.expected_op_query = test_data.query_input;
    test_data.expected_find_command = "{'find': 'collection', 'filter': {}, 'max': {'_id': 100}}";
+   test_data.expected_result = "[{'_id': 1}]";
+   _test_collection_find (&test_data);
+}
+
+
+static void
+test_snapshot (void)
+{
+   test_collection_find_t test_data = TEST_COLLECTION_FIND_INIT;
+   test_data.docs = "[{'_id': 1}]";
+   test_data.query_input = "{'$query': {}, '$snapshot': true}";
+   test_data.expected_op_query = test_data.query_input;
+   test_data.expected_find_command = "{'find': 'collection', 'filter': {}, 'snapshot': true}";
    test_data.expected_result = "[{'_id': 1}]";
    _test_collection_find (&test_data);
 }
@@ -686,6 +683,21 @@ test_limit (void)
    test_data.n_return = 2;
    test_data.expected_find_command = "{'find': 'collection', 'filter': {}, 'sort': {'_id': 1}, 'limit': {'$numberLong': '2'}}";
    test_data.expected_result = "[{'_id': 1}, {'_id': 2}]";
+   _test_collection_find (&test_data);
+}
+
+
+static void
+test_unrecognized_dollar_option (void)
+{
+   test_collection_find_t test_data = TEST_COLLECTION_FIND_INIT;
+
+   test_data.query_input = "{'$query': {'a': 1}, '$dumb': 1}";
+   test_data.expected_find_command =
+      "{'find': 'collection', 'filter': {'a': 1}, '$dumb': 1}";
+
+   test_data.requires_wire_version_4 = true;
+   test_data.do_live = false;
    _test_collection_find (&test_data);
 }
 
@@ -859,11 +871,117 @@ test_getmore_invalid_reply (void)
 }
 
 
+static void
+test_getmore_await (void)
+{
+   typedef struct
+   {
+      mongoc_query_flags_t flags;
+      bool                 expect_await;
+   } await_test_t;
+
+   await_test_t await_tests[] = {
+      { MONGOC_QUERY_NONE, false },
+      { MONGOC_QUERY_TAILABLE_CURSOR, false },
+      { MONGOC_QUERY_AWAIT_DATA, false },
+      { MONGOC_QUERY_TAILABLE_CURSOR | MONGOC_QUERY_AWAIT_DATA, true },
+   };
+
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   mongoc_cursor_t *cursor;
+   future_t *future;
+   request_t *request;
+   const bson_t *doc;
+   size_t i;
+   char *max_time_json;
+
+   server = mock_server_with_autoismaster (4);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "db", "collection");
+
+   for (i = 3; i < sizeof (await_tests) / sizeof (await_test_t); i++) {
+      cursor = mongoc_collection_find (
+         collection,
+         await_tests[i].flags,
+         0,
+         0,
+         0,
+         tmp_bson ("{}"),
+         NULL,
+         NULL);
+
+      ASSERT_CMPINT (0, ==, mongoc_cursor_get_max_await_time_ms (cursor));
+      mongoc_cursor_set_max_await_time_ms (cursor, 123);
+      future = future_cursor_next (cursor, &doc);
+
+      /* only the slave ok bit is still in the query header */
+      request = mock_server_receives_command (server, "db",
+                                              MONGOC_QUERY_SLAVE_OK,
+                                              "{'find': 'collection'}");
+
+      /* reply with cursor id 1 */
+      mock_server_replies_simple (request, "{'ok': 1,"
+                                           " 'cursor': {"
+                                           "    'id': 1,"
+                                           "    'ns': 'db.collection',"
+                                           "    'firstBatch': [{}]}}");
+
+      /* no result or error */
+      ASSERT (future_get_bool (future));
+
+      future_destroy (future);
+      request_destroy (request);
+
+      future = future_cursor_next (cursor, &doc);
+
+      if (await_tests[i].expect_await) {
+         max_time_json = "123";
+      } else {
+         max_time_json = "{'$exists': false}";
+      }
+
+      /* only the slave ok bit is still in the query header */
+      request = mock_server_receives_command (
+         server, "db",
+         MONGOC_QUERY_SLAVE_OK,
+         "{'getMore': {'$numberLong': '1'},"
+         " 'collection': 'collection',"
+         " 'maxTimeMS': %s}",
+         max_time_json);
+
+      assert (request);
+      /* reply with cursor id 0 */
+      mock_server_replies_simple (request, "{'ok': 1,"
+                                           " 'cursor': {"
+                                           "    'id': 0,"
+                                           "    'ns': 'db.collection',"
+                                           "    'nextBatch': []}}");
+
+      /* no result or error */
+      ASSERT (!future_get_bool (future));
+      ASSERT (!mongoc_cursor_error (cursor, NULL));
+
+      future_destroy (future);
+      request_destroy (request);
+      mongoc_cursor_destroy (cursor);
+   }
+
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
+}
+
+
 void
 test_collection_find_install (TestSuite *suite)
 {
    TestSuite_Add (suite, "/Collection/find/dollar_query",
                   test_dollar_query);
+   TestSuite_Add (suite, "/Collection/find/dollar_or",
+                  test_dollar_or);
    TestSuite_Add (suite, "/Collection/find/key_named_filter",
                   test_key_named_filter);
    TestSuite_Add (suite, "/Collection/find/cmd/subdoc_named_filter",
@@ -880,14 +998,14 @@ test_collection_find_install (TestSuite *suite)
                   test_fields);
    TestSuite_Add (suite, "/Collection/find/modifiers/integer",
                   test_int_modifiers);
-   TestSuite_Add (suite, "/Collection/find/modifiers/bool",
-                  test_bool_modifiers);
    TestSuite_Add (suite, "/Collection/find/modifiers/index_spec",
                   test_index_spec_modifiers);
    TestSuite_Add (suite, "/Collection/find/comment",
                   test_comment);
    TestSuite_Add (suite, "/Collection/find/max",
                   test_max);
+   TestSuite_Add (suite, "/Collection/find/modifiers/bool",
+                  test_snapshot);
    TestSuite_Add (suite, "/Collection/find/showdiskloc",
                   test_diskloc);
    TestSuite_Add (suite, "/Collection/find/returnkey",
@@ -898,6 +1016,8 @@ test_collection_find_install (TestSuite *suite)
                   test_batch_size);
    TestSuite_Add (suite, "/Collection/find/limit",
                   test_limit);
+   TestSuite_Add (suite, "/Collection/find/unrecognized",
+                  test_unrecognized_dollar_option);
    TestSuite_Add (suite, "/Collection/find/flags",
                   test_query_flags);
 
@@ -905,4 +1025,6 @@ test_collection_find_install (TestSuite *suite)
                   test_getmore_batch_size);
    TestSuite_Add (suite, "/Collection/getmore/invalid_reply",
                   test_getmore_invalid_reply);
+   TestSuite_Add (suite, "/Collection/getmore/await",
+                  test_getmore_await);
 }

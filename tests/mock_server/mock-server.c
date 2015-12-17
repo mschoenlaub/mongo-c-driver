@@ -29,11 +29,6 @@
 #include "../test-libmongoc.h"
 
 
-#ifdef _WIN32
-# define strcasecmp _stricmp
-#endif
-
-
 #define TIMEOUT 100
 
 
@@ -1031,6 +1026,47 @@ mock_server_receives_delete (mock_server_t *server,
 
 /*--------------------------------------------------------------------------
  *
+ * mock_server_receives_getmore --
+ *
+ *       Pop a client request if one is enqueued, or wait up to
+ *       request_timeout_ms for the client to send a request.
+ *
+ * Returns:
+ *       A request you must request_destroy, or NULL if the request does
+ *       not match.
+ *
+ * Side effects:
+ *       Logs if the current request is not a getmore matching n_return
+ *       and cursor_id.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+request_t *
+mock_server_receives_getmore (mock_server_t *server,
+                              const char    *ns,
+                              uint32_t       n_return,
+                              int64_t        cursor_id)
+{
+   request_t *request;
+
+   request = mock_server_receives_request (server);
+
+   if (request && !request_matches_getmore (request,
+                                            ns,
+                                            n_return,
+                                            cursor_id)) {
+      request_destroy (request);
+      return NULL;
+   }
+
+   return request;
+}
+
+
+
+/*--------------------------------------------------------------------------
+ *
  * mock_server_receives_kill_cursors --
  *
  *       Pop a client request if one is enqueued, or wait up to
@@ -1204,6 +1240,73 @@ mock_server_replies_simple (request_t *request,
                             const char *docs_json)
 {
    mock_server_replies (request, 0, 0, 0, 1, docs_json);
+}
+
+
+/*--------------------------------------------------------------------------
+ *
+ * mock_server_replies_to_find --
+ *
+ *       Receive an OP_QUERY or "find" command and reply appropriately.
+ *
+ * Returns:
+ *       None.
+ *
+ * Side effects:
+ *       Very roughly validates the query or "find" command or aborts.
+ *       The intent is not to test the driver's query or find command
+ *       implementation here, see _test_kill_cursors for example use.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+void
+mock_server_replies_to_find (request_t           *request,
+                             mongoc_query_flags_t flags,
+                             int64_t              cursor_id,
+                             int32_t              number_returned,
+                             const char          *ns,
+                             const char          *reply_json,
+                             bool                 is_command)
+{
+   char *find_reply;
+   char db[MONGOC_NAMESPACE_MAX];
+
+   _mongoc_get_db_name (ns, db);
+
+   /* minimal validation, we're not testing query / find cmd here */
+   if (request->is_command && !is_command) {
+      MONGOC_ERROR ("expected query, got command");
+      abort ();
+   }
+
+   if (!request->is_command && is_command) {
+      MONGOC_ERROR ("expected command, got query");
+      abort ();
+   }
+
+   if (!request_matches_flags (request, flags)) {
+      abort ();
+   }
+
+   if (is_command) {
+      find_reply = bson_strdup_printf (
+         "{'ok': 1,"
+            " 'cursor': {"
+            "    'id': {'$numberLong': '%" PRId64 "'},"
+            "    'ns': '%s',"
+            "    'firstBatch': [%s]}}",
+         cursor_id,
+         ns,
+         reply_json);
+
+      mock_server_replies_simple (request, find_reply);
+      bson_free (find_reply);
+   } else {
+      mock_server_replies (request, MONGOC_REPLY_NONE, cursor_id, 0,
+                           number_returned, reply_json);
+
+   }
 }
 
 
@@ -1576,8 +1679,13 @@ mock_server_reply_multi (request_t           *request,
 
    _mongoc_array_init (&ar, sizeof (mongoc_iovec_t));
 
+   if (!(request->opcode == MONGOC_OPCODE_QUERY &&
+         request_rpc->query.flags & MONGOC_QUERY_EXHAUST)) {
+      server->last_response_id++;
+   }
+
    mongoc_mutex_lock (&server->mutex);
-   r.reply.request_id = ++server->last_response_id;
+   r.reply.request_id = server->last_response_id;
    mongoc_mutex_unlock (&server->mutex);
    r.reply.msg_len = 0;
    r.reply.response_to = request_rpc->header.request_id;

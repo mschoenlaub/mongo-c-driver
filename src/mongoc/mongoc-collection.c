@@ -32,6 +32,7 @@
 #include "mongoc-index.h"
 #include "mongoc-log.h"
 #include "mongoc-trace.h"
+#include "mongoc-read-concern-private.h"
 #include "mongoc-write-concern-private.h"
 
 
@@ -99,7 +100,8 @@ _mongoc_collection_cursor_new (mongoc_collection_t *collection,
                              false,              /* is_command */
                              NULL,               /* query */
                              NULL,               /* fields */
-                             NULL);              /* read prefs */
+                             NULL,               /* read prefs */
+                             NULL);              /* read concern */
 }
 
 static void
@@ -142,6 +144,7 @@ _mongoc_collection_write_command_execute (mongoc_write_command_t       *command,
  *       @db is the db name of the collection.
  *       @collection is the name of the collection.
  *       @read_prefs is the default read preferences to apply or NULL.
+ *       @read_concern is the default read concern to apply or NULL.
  *       @write_concern is the default write concern to apply or NULL.
  *
  * Returns:
@@ -159,6 +162,7 @@ _mongoc_collection_new (mongoc_client_t              *client,
                         const char                   *db,
                         const char                   *collection,
                         const mongoc_read_prefs_t    *read_prefs,
+                        const mongoc_read_concern_t  *read_concern,
                         const mongoc_write_concern_t *write_concern)
 {
    mongoc_collection_t *col;
@@ -174,6 +178,9 @@ _mongoc_collection_new (mongoc_client_t              *client,
    col->write_concern = write_concern ?
       mongoc_write_concern_copy(write_concern) :
       mongoc_write_concern_new();
+   col->read_concern = read_concern ?
+      mongoc_read_concern_copy(read_concern) :
+      mongoc_read_concern_new();
    col->read_prefs = read_prefs ?
       mongoc_read_prefs_copy(read_prefs) :
       mongoc_read_prefs_new(MONGOC_READ_PRIMARY);
@@ -226,6 +233,11 @@ mongoc_collection_destroy (mongoc_collection_t *collection) /* IN */
       collection->read_prefs = NULL;
    }
 
+   if (collection->read_concern) {
+      mongoc_read_concern_destroy(collection->read_concern);
+      collection->read_concern = NULL;
+   }
+
    if (collection->write_concern) {
       mongoc_write_concern_destroy(collection->write_concern);
       collection->write_concern = NULL;
@@ -234,6 +246,37 @@ mongoc_collection_destroy (mongoc_collection_t *collection) /* IN */
    bson_free(collection);
 
    EXIT;
+}
+
+
+/*
+ *--------------------------------------------------------------------------
+ *
+ * mongoc_collection_copy --
+ *
+ *       Returns a copy of @collection that needs to be freed by calling
+ *       mongoc_collection_destroy.
+ *
+ * Returns:
+ *       A copy of this collection.
+ *
+ * Side effects:
+ *       None.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+mongoc_collection_t *
+mongoc_collection_copy (mongoc_collection_t *collection) /* IN */
+{
+   ENTRY;
+
+   BSON_ASSERT (collection);
+
+   RETURN(_mongoc_collection_new(collection->client, collection->db,
+                                 collection->collection, collection->read_prefs,
+                                 collection->read_concern,
+                                 collection->write_concern));
 }
 
 
@@ -319,7 +362,8 @@ mongoc_collection_aggregate (mongoc_collection_t       *collection, /* IN */
    }
 
    cursor->hint = selected_server->id;
-   use_cursor = selected_server->max_wire_version >= 1;
+   use_cursor = 
+      selected_server->max_wire_version >= WIRE_VERSION_AGG_CURSOR;
 
    BSON_APPEND_UTF8 (&command, "aggregate", collection->collection);
 
@@ -371,6 +415,21 @@ mongoc_collection_aggregate (mongoc_collection_t       *collection, /* IN */
             }
          }
       }
+   }
+
+   if (collection->read_concern->level != NULL) {
+      const bson_t *read_concern_bson;
+
+      if (selected_server->max_wire_version < WIRE_VERSION_READ_CONCERN) {
+         bson_set_error (&cursor->error,
+                         MONGOC_ERROR_COMMAND,
+                         MONGOC_ERROR_PROTOCOL_BAD_WIRE_VERSION,
+                         "The selected server does not support readConcern");
+         GOTO (done);
+      }
+
+      read_concern_bson = _mongoc_read_concern_get_bson (collection->read_concern);
+      BSON_APPEND_DOCUMENT (&command, "readConcern", read_concern_bson);
    }
 
    if (use_cursor) {
@@ -456,8 +515,9 @@ mongoc_collection_find (mongoc_collection_t       *collection, /* IN */
       read_prefs = collection->read_prefs;
    }
 
-   return _mongoc_cursor_new(collection->client, collection->ns, flags, skip,
-                             limit, batch_size, false, query, fields, read_prefs);
+   return _mongoc_cursor_new (collection->client, collection->ns, flags, skip,
+                              limit, batch_size, false, query, fields, read_prefs,
+                              collection->read_concern);
 }
 
 
@@ -566,8 +626,8 @@ int64_t
 mongoc_collection_count (mongoc_collection_t       *collection,  /* IN */
                          mongoc_query_flags_t       flags,       /* IN */
                          const bson_t              *query,       /* IN */
-                         int64_t               skip,        /* IN */
-                         int64_t               limit,       /* IN */
+                         int64_t                    skip,        /* IN */
+                         int64_t                    limit,       /* IN */
                          const mongoc_read_prefs_t *read_prefs,  /* IN */
                          bson_error_t              *error)       /* OUT */
 {
@@ -593,11 +653,23 @@ mongoc_collection_count_with_opts (mongoc_collection_t       *collection,  /* IN
                                    const mongoc_read_prefs_t *read_prefs,  /* IN */
                                    bson_error_t              *error)       /* OUT */
 {
-   int64_t ret = -1;
+   mongoc_server_stream_t *server_stream;
+   mongoc_cluster_t *cluster;
    bson_iter_t iter;
+   int64_t ret = -1;
+   bool success;
    bson_t reply;
    bson_t cmd;
    bson_t q;
+
+   ENTRY;
+
+
+   cluster = &collection->client->cluster;
+   server_stream = mongoc_cluster_stream_for_writes (cluster, error);
+   if (!server_stream) {
+      RETURN (-1);
+   }
 
    BSON_ASSERT (collection);
 
@@ -617,18 +689,38 @@ mongoc_collection_count_with_opts (mongoc_collection_t       *collection,  /* IN
    if (skip) {
       bson_append_int64(&cmd, "skip", 4, skip);
    }
+   if (collection->read_concern->level != NULL) {
+      const bson_t *read_concern_bson;
+
+      if (server_stream->sd->max_wire_version < WIRE_VERSION_READ_CONCERN) {
+         bson_set_error (error,
+                         MONGOC_ERROR_COMMAND,
+                         MONGOC_ERROR_PROTOCOL_BAD_WIRE_VERSION,
+                         "The selected server does not support readConcern");
+         bson_destroy (&cmd);
+         mongoc_server_stream_cleanup (server_stream);
+         RETURN (-1);
+      }
+
+      read_concern_bson = _mongoc_read_concern_get_bson (collection->read_concern);
+      BSON_APPEND_DOCUMENT (&cmd, "readConcern", read_concern_bson);
+   }
    if (opts) {
        bson_concat(&cmd, opts);
    }
-   if (mongoc_collection_command_simple(collection, &cmd, read_prefs,
-                                        &reply, error) &&
-       bson_iter_init_find(&iter, &reply, "n")) {
+
+   success = mongoc_cluster_run_command (cluster, server_stream->stream,
+                                         MONGOC_QUERY_SLAVE_OK, collection->db,
+                                         &cmd, &reply, error);
+
+   if (success && bson_iter_init_find(&iter, &reply, "n")) {
       ret = bson_iter_as_int64(&iter);
    }
-   bson_destroy(&reply);
-   bson_destroy(&cmd);
+   bson_destroy (&reply);
+   bson_destroy (&cmd);
+   mongoc_server_stream_cleanup (server_stream);
 
-   return ret;
+   RETURN (ret);
 }
 
 
@@ -1576,6 +1668,64 @@ mongoc_collection_set_read_prefs (mongoc_collection_t       *collection,
 /*
  *--------------------------------------------------------------------------
  *
+ * mongoc_collection_get_read_concern --
+ *
+ *       Fetches the default read concern for the collection instance.
+ *
+ * Returns:
+ *       A mongoc_read_concern_t that should not be modified or freed.
+ *
+ * Side effects:
+ *       None.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+const mongoc_read_concern_t *
+mongoc_collection_get_read_concern (const mongoc_collection_t *collection)
+{
+   BSON_ASSERT (collection);
+
+   return collection->read_concern;
+}
+
+
+/*
+ *--------------------------------------------------------------------------
+ *
+ * mongoc_collection_set_read_concern --
+ *
+ *       Sets the default read concern for the collection instance.
+ *
+ * Returns:
+ *       None.
+ *
+ * Side effects:
+ *       None.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+void
+mongoc_collection_set_read_concern (mongoc_collection_t          *collection,
+                                    const mongoc_read_concern_t *read_concern)
+{
+   BSON_ASSERT (collection);
+
+   if (collection->read_concern) {
+      mongoc_read_concern_destroy (collection->read_concern);
+      collection->read_concern = NULL;
+   }
+
+   if (read_concern) {
+      collection->read_concern = mongoc_read_concern_copy (read_concern);
+   }
+}
+
+
+/*
+ *--------------------------------------------------------------------------
+ *
  * mongoc_collection_get_write_concern --
  *
  *       Fetches the default write concern for the collection instance.
@@ -1906,7 +2056,6 @@ mongoc_collection_create_bulk_operation (
    return _mongoc_bulk_operation_new (collection->client,
                                       collection->db,
                                       collection->collection,
-                                      0,
                                       write_flags,
                                       write_concern);
 }
@@ -1942,10 +2091,12 @@ mongoc_collection_find_and_modify_with_opts (mongoc_collection_t                
 {
    mongoc_cluster_t *cluster;
    mongoc_server_stream_t *server_stream;
+   bson_iter_t iter;
+   bson_iter_t inner;
    const char *name;
+   bson_t reply_local;
    bool ret;
    bson_t command = BSON_INITIALIZER;
-   mongoc_write_concern_t *wc;
 
    ENTRY;
 
@@ -1993,10 +2144,8 @@ mongoc_collection_find_and_modify_with_opts (mongoc_collection_t                
                         !!opts->bypass_document_validation);
    }
 
-   wc = opts->write_concern ? opts->write_concern : collection->write_concern;
-
-   if (server_stream->sd->max_wire_version >= 4) {
-      if (!_mongoc_write_concern_is_valid (wc)) {
+   if (server_stream->sd->max_wire_version >= WIRE_VERSION_FAM_WRITE_CONCERN) {
+      if (!_mongoc_write_concern_is_valid (collection->write_concern)) {
          bson_set_error (error,
                          MONGOC_ERROR_COMMAND,
                          MONGOC_ERROR_COMMAND_INVALID_ARG,
@@ -2006,15 +2155,35 @@ mongoc_collection_find_and_modify_with_opts (mongoc_collection_t                
          RETURN (false);
       }
 
-      if (_mongoc_write_concern_needs_gle (wc)) {
-         _BSON_APPEND_WRITE_CONCERN (&command, wc);
+      if (_mongoc_write_concern_needs_gle (collection->write_concern)) {
+         _BSON_APPEND_WRITE_CONCERN (&command, collection->write_concern);
       }
    }
 
    ret = mongoc_cluster_run_command (cluster, server_stream->stream,
                                      MONGOC_QUERY_NONE, collection->db,
-                                     &command, reply, error);
+                                     &command, &reply_local, error);
 
+   if (bson_iter_init_find (&iter, &reply_local, "writeConcernError") &&
+         BSON_ITER_HOLDS_DOCUMENT (&iter)) {
+      const char *errmsg = NULL;
+      int32_t code = 0;
+
+      bson_iter_recurse(&iter, &inner);
+      while (bson_iter_next (&inner)) {
+         if (BSON_ITER_IS_KEY (&inner, "code")) {
+            code = bson_iter_int32 (&inner);
+         } else if (BSON_ITER_IS_KEY (&inner, "errmsg")) {
+            errmsg = bson_iter_utf8 (&inner, NULL);
+         }
+      }
+      bson_set_error (error, MONGOC_ERROR_WRITE_CONCERN, code, "Write Concern error: %s", errmsg);
+   }
+   if (reply) {
+      bson_copy_to (&reply_local, reply);
+   }
+
+   bson_destroy (&reply_local);
    bson_destroy (&command);
    mongoc_server_stream_cleanup (server_stream);
 
@@ -2092,7 +2261,6 @@ mongoc_collection_find_and_modify (mongoc_collection_t *collection,
    mongoc_find_and_modify_opts_set_update (opts, update);
    mongoc_find_and_modify_opts_set_fields (opts, fields);
    mongoc_find_and_modify_opts_set_flags (opts, flags);
-   mongoc_find_and_modify_opts_set_write_concern (opts, collection->write_concern);
 
    ret = mongoc_collection_find_and_modify_with_opts (collection, query, opts, reply, error);
    mongoc_find_and_modify_opts_destroy (opts);

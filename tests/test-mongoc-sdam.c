@@ -9,6 +9,7 @@
 #include "mongoc-server-description-private.h"
 #include "mongoc-topology-description-private.h"
 #include "mongoc-topology-private.h"
+#include "mongoc-util-private.h"
 
 #include "TestSuite.h"
 #include "test-conveniences.h"
@@ -22,10 +23,6 @@
 #endif
 
 #define MAX_NUM_TESTS 100
-
-#if defined(_WIN32) && !defined(strcasecmp)
-# define strcasecmp _stricmp
-#endif
 
 /* caller must clean up the returned description */
 static mongoc_server_description_t *
@@ -67,6 +64,17 @@ _topology_has_description(mongoc_topology_description_t *topology,
          }
       } else if (strcmp("type", bson_iter_key (&server_iter)) == 0) {
          assert (sd->type == server_type_from_test(bson_iter_utf8(&server_iter, NULL)));
+      } else if (strcmp("electionId", bson_iter_key (&server_iter)) == 0) {
+         bson_oid_t expected_oid;
+         if (BSON_ITER_HOLDS_NULL (&server_iter)) {
+            bson_oid_init_from_string (&expected_oid,
+                                       "000000000000000000000000");
+         } else {
+            ASSERT (BSON_ITER_HOLDS_OID (&server_iter));
+            bson_oid_copy (bson_iter_oid (&server_iter), &expected_oid);
+         }
+
+         ASSERT_CMPOID (&sd->election_id, &expected_oid);
       } else {
          fprintf (stderr, "ERROR: unparsed field %s\n", bson_iter_key(&server_iter));
          assert (0);

@@ -36,6 +36,35 @@ get_test_collection (mongoc_client_t *client,
 
 
 static void
+test_copy (void)
+{
+   mongoc_database_t *database;
+   mongoc_collection_t *collection;
+   mongoc_collection_t *copy;
+   mongoc_client_t *client;
+
+   client = test_framework_client_new ();
+   ASSERT (client);
+
+   database = get_test_database (client);
+   ASSERT (database);
+
+   collection = get_test_collection (client, "test_insert");
+   ASSERT (collection);
+
+   copy = mongoc_collection_copy(collection);
+   ASSERT (copy);
+   ASSERT (copy->client == collection->client);
+   ASSERT (strcmp(copy->ns, collection->ns) == 0);
+
+   mongoc_collection_destroy(copy);
+   mongoc_collection_destroy(collection);
+   mongoc_database_destroy(database);
+   mongoc_client_destroy(client);
+}
+
+
+static void
 test_insert (void)
 {
    mongoc_database_t *database;
@@ -90,6 +119,52 @@ test_insert (void)
    mongoc_database_destroy(database);
    bson_context_destroy(context);
    mongoc_client_destroy(client);
+}
+
+/* CDRIVER-759, a 2.4 mongos responds to getLastError after an oversized insert:
+ *
+ * { err: "assertion src/mongo/s/strategy_shard.cpp:461", n: 0, ok: 1.0 }
+ *
+ * There's an "err" but no "code".
+*/
+
+static void
+test_legacy_insert_oversize_mongos (void)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   bson_t b = BSON_INITIALIZER;
+   bson_error_t error;
+   future_t *future;
+   request_t *request;
+
+   server = mock_server_with_autoismaster (0);
+   mock_server_run (server);
+
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+      ASSERT (client);
+
+   collection = mongoc_client_get_collection (client, "test", "test");
+   future = future_collection_insert (collection, MONGOC_INSERT_NONE,
+                                      &b, NULL, &error);
+
+   request = mock_server_receives_insert (server, "test.test",
+                                          MONGOC_INSERT_NONE, "{}");
+   request_destroy (request);
+   request = mock_server_receives_gle (server, "test");
+   mock_server_replies_simple (request, "{'err': 'oh no!', 'n': 0, 'ok': 1}");
+   ASSERT (!future_get_bool (future));
+   ASSERT_ERROR_CONTAINS (error,
+                          MONGOC_ERROR_COMMAND,
+                          MONGOC_ERROR_COLLECTION_INSERT_FAILED,
+                          "oh no!");
+
+   request_destroy (request);
+   future_destroy (future);
+   mongoc_collection_destroy(collection);
+   mongoc_client_destroy(client);
+   mock_server_destroy (server);
 }
 
 
@@ -1222,6 +1297,230 @@ test_count (void)
 
 
 static void
+test_count_read_concern (void)
+{
+   mongoc_collection_t *collection;
+   mongoc_client_t *client;
+   mongoc_read_concern_t *rc;
+   mock_server_t *server;
+   request_t *request;
+   bson_error_t error;
+   future_t *future;
+   int64_t count;
+   bson_t b;
+
+   /* wire protocol version 4 */
+   server = mock_server_with_autoismaster (WIRE_VERSION_READ_CONCERN);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   ASSERT (client);
+
+   collection = mongoc_client_get_collection (client, "test", "test");
+   ASSERT (collection);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  } }");
+
+   mock_server_replies_simple (request, "{ 'n' : 42, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 42, error);
+
+   /* readConcern: { level: majority } */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_MAJORITY);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  }, 'readConcern': {'level': 'majority'}}");
+
+   mock_server_replies_simple (request, "{ 'n' : 43, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 43, error);
+   mongoc_read_concern_destroy (rc);
+
+
+   /* readConcern: { level: local } */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_LOCAL);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  }, 'readConcern': {'level': 'local'}}");
+
+   mock_server_replies_simple (request, "{ 'n' : 44, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 44, error);
+   mongoc_read_concern_destroy (rc);
+
+   /* readConcern: { level: futureCompatible } */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, "futureCompatible");
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  }, 'readConcern': {'level': 'futureCompatible'}}");
+
+   mock_server_replies_simple (request, "{ 'n' : 45, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 45, error);
+   mongoc_read_concern_destroy (rc);
+
+   /* Setting readConcern to NULL should not send readConcern */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, NULL);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  }, 'readConcern': { '$exists': false }}");
+
+   mock_server_replies_simple (request, "{ 'n' : 46, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 46, error);
+   mongoc_read_concern_destroy (rc);
+
+   /* Fresh read_concern should not send readConcern */
+   rc = mongoc_read_concern_new ();
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   future = future_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                     0, 0, NULL, &error);
+   bson_destroy(&b);
+   request = mock_server_receives_command (
+      server, "test", MONGOC_QUERY_SLAVE_OK,
+      "{ 'count' : 'test', 'query' : {  }, 'readConcern': { '$exists': false }}");
+
+   mock_server_replies_simple (request, "{ 'n' : 47, 'ok' : 1 } ");
+   count = future_get_int64_t (future);
+   ASSERT_OR_PRINT (count == 47, error);
+   mongoc_read_concern_destroy (rc);
+
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
+}
+
+
+static void
+_test_count_read_concern_live (bool supports_read_concern)
+{
+   mongoc_collection_t *collection;
+   mongoc_client_t *client;
+   mongoc_read_concern_t *rc;
+   bson_error_t error;
+   int64_t count;
+   bson_t b;
+
+
+   client = test_framework_client_new ();
+   ASSERT (client);
+
+   collection = mongoc_client_get_collection (client, "test", "test");
+   ASSERT (collection);
+
+   mongoc_collection_drop (collection, &error);
+
+   bson_init(&b);
+   count = mongoc_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                    0, 0, NULL, &error);
+   bson_destroy(&b);
+   ASSERT_OR_PRINT (count == 0, error);
+
+   /* Setting readConcern to NULL should not send readConcern */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, NULL);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   count = mongoc_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                    0, 0, NULL, &error);
+   bson_destroy(&b);
+   ASSERT_OR_PRINT (count == 0, error);
+   mongoc_read_concern_destroy (rc);
+
+   /* readConcern: { level: local } should raise error pre 3.2 */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_LOCAL);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   count = mongoc_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                    0, 0, NULL, &error);
+   bson_destroy(&b);
+   if (supports_read_concern) {
+      ASSERT_OR_PRINT (count == 0, error);
+   } else {
+      ASSERT_ERROR_CONTAINS(error, MONGOC_ERROR_COMMAND,
+            MONGOC_ERROR_PROTOCOL_BAD_WIRE_VERSION,
+            "The selected server does not support readConcern") 
+   }
+   mongoc_read_concern_destroy (rc);
+
+   /* readConcern: { level: majority } should raise error pre 3.2 */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_MAJORITY);
+   mongoc_collection_set_read_concern (collection, rc);
+
+   bson_init(&b);
+   count = mongoc_collection_count (collection, MONGOC_QUERY_NONE, &b,
+                                    0, 0, NULL, &error);
+   bson_destroy(&b);
+   if (supports_read_concern) {
+      ASSERT_OR_PRINT (count == 0, error);
+   } else {
+      ASSERT_ERROR_CONTAINS(error, MONGOC_ERROR_COMMAND,
+            MONGOC_ERROR_PROTOCOL_BAD_WIRE_VERSION,
+            "The selected server does not support readConcern") 
+   }
+   mongoc_read_concern_destroy (rc);
+
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+}
+
+int
+mongod_supports_majority_read_concern (void)
+{
+   return test_framework_getenv_bool ("MONGOC_ENABLE_MAJORITY_READ_CONCERN");
+}
+
+static void
+test_count_read_concern_live (void *context)
+{
+   if (test_framework_max_wire_version_at_least (WIRE_VERSION_READ_CONCERN)) {
+      _test_count_read_concern_live (true);
+   } else {
+      _test_count_read_concern_live (false);
+   }
+}
+
+
+static void
 test_count_with_opts (void)
 {
    mongoc_collection_t *collection;
@@ -2350,6 +2649,284 @@ test_aggregate_install (TestSuite *suite) {
 }
 
 
+static void
+test_find_read_concern (void)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_read_concern_t *rc;
+   mongoc_collection_t *collection;
+   mongoc_cursor_t *cursor;
+   future_t *future;
+   request_t *request;
+   const bson_t *doc;
+
+   server = mock_server_with_autoismaster (WIRE_VERSION_READ_CONCERN);
+   mock_server_run (server);
+
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "test", "test");
+
+   /* No read_concern set */
+   cursor = mongoc_collection_find (collection,
+                                    MONGOC_QUERY_SLAVE_OK,
+                                    0 /* skip */,
+                                    0 /* limit */,
+                                    0 /* batch_size */,
+                                    tmp_bson ("{}"),
+                                    NULL,
+                                    NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_SLAVE_OK,
+                                           "{'find' : 'test', 'filter' : {  } }");
+   mock_server_replies_simple (request, "{'ok': 1,"
+         " 'cursor': {"
+         "    'id': 0,"
+         "    'ns': 'test.test',"
+         "    'firstBatch': [{'_id': 123}]}}");
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_cursor_destroy (cursor);
+
+   /* readConcernLevel = local */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_LOCAL);
+   mongoc_collection_set_read_concern (collection, rc);
+   cursor = mongoc_collection_find (collection,
+                                    MONGOC_QUERY_SLAVE_OK,
+                                    0 /* skip */,
+                                    0 /* limit */,
+                                    0 /* batch_size */,
+                                    tmp_bson ("{}"),
+                                    NULL,
+                                    NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_SLAVE_OK,
+         "{"
+         "  'find' : 'test',"
+         "  'filter' : {  },"
+         "  'readConcern': {"
+         "    'level': 'local'"
+         "   }"
+         "}");
+   mock_server_replies_simple (request, "{'ok': 1,"
+         " 'cursor': {"
+         "    'id': 0,"
+         "    'ns': 'test.test',"
+         "    'firstBatch': [{'_id': 123}]}}");
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_cursor_destroy (cursor);
+
+   /* readConcernLevel = random */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, "random");
+   mongoc_collection_set_read_concern (collection, rc);
+   cursor = mongoc_collection_find (collection,
+                                    MONGOC_QUERY_SLAVE_OK,
+                                    0 /* skip */,
+                                    0 /* limit */,
+                                    0 /* batch_size */,
+                                    tmp_bson ("{}"),
+                                    NULL,
+                                    NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_SLAVE_OK,
+         "{"
+         "  'find' : 'test',"
+         "  'filter' : {  },"
+         "  'readConcern': {"
+         "    'level': 'random'"
+         "   }"
+         "}");
+   mock_server_replies_simple (request, "{'ok': 1,"
+         " 'cursor': {"
+         "    'id': 0,"
+         "    'ns': 'test.test',"
+         "    'firstBatch': [{'_id': 123}]}}");
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_cursor_destroy (cursor);
+
+   /* empty readConcernLevel doesn't send anything */
+   rc = mongoc_read_concern_new ();
+   mongoc_collection_set_read_concern (collection, rc);
+   cursor = mongoc_collection_find (collection,
+                                    MONGOC_QUERY_SLAVE_OK,
+                                    0 /* skip */,
+                                    0 /* limit */,
+                                    0 /* batch_size */,
+                                    tmp_bson ("{}"),
+                                    NULL,
+                                    NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_SLAVE_OK,
+         "{"
+         "  'find' : 'test',"
+         "  'filter' : {  },"
+         "  'readConcern': { '$exists': false }"
+         "}");
+   mock_server_replies_simple (request, "{'ok': 1,"
+         " 'cursor': {"
+         "    'id': 0,"
+         "    'ns': 'test.test',"
+         "    'firstBatch': [{'_id': 123}]}}");
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_cursor_destroy (cursor);
+
+   /* readConcernLevel = NULL doesn't send anything */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, NULL);
+   mongoc_collection_set_read_concern (collection, rc);
+   cursor = mongoc_collection_find (collection,
+                                    MONGOC_QUERY_SLAVE_OK,
+                                    0 /* skip */,
+                                    0 /* limit */,
+                                    0 /* batch_size */,
+                                    tmp_bson ("{}"),
+                                    NULL,
+                                    NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_SLAVE_OK,
+         "{"
+         "  'find' : 'test',"
+         "  'filter' : {  },"
+         "  'readConcern': { '$exists': false }"
+         "}");
+   mock_server_replies_simple (request, "{'ok': 1,"
+         " 'cursor': {"
+         "    'id': 0,"
+         "    'ns': 'test.test',"
+         "    'firstBatch': [{'_id': 123}]}}");
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_cursor_destroy (cursor);
+
+   mongoc_collection_destroy(collection);
+   mongoc_client_destroy(client);
+   mock_server_destroy (server);
+}
+
+
+static void
+test_aggregate_read_concern (void)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   mongoc_read_concern_t *rc;
+   future_t *future;
+   request_t *request;
+   mongoc_cursor_t *cursor;
+   const bson_t *doc;
+
+   server = mock_server_with_autoismaster (WIRE_VERSION_READ_CONCERN);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "db", "collection");
+
+   /* No readConcern */
+   cursor = mongoc_collection_aggregate (
+      collection,
+      MONGOC_QUERY_NONE,
+      tmp_bson ("[{'a': 1}]"),
+      NULL,
+      NULL);
+
+   ASSERT (cursor);
+   future = future_cursor_next (cursor, &doc);
+
+   request = mock_server_receives_command (
+      server, "db", MONGOC_QUERY_SLAVE_OK,
+      "{"
+      "  'aggregate' : 'collection',"
+      "  'pipeline' : [{"
+      "      'a' : 1"
+      "  }],"
+      "  'cursor' : {  },"
+      "  'readConcern': { '$exists': false }"
+      "}"
+   );
+
+   mock_server_replies_simple (request,
+                               "{'ok': 1,"
+                               " 'cursor': {"
+                               "    'id': 0,"
+                               "    'ns': 'db.collection',"
+                               "    'firstBatch': [{'_id': 123}]"
+                               "}}");
+
+   ASSERT (future_get_bool (future));
+   ASSERT_MATCH (doc, "{'_id': 123}");
+
+   /* cursor is completed */
+   assert (!mongoc_cursor_next (cursor, &doc));
+   mongoc_cursor_destroy (cursor);
+   request_destroy (request);
+   future_destroy (future);
+
+   /* readConcern: majority */
+   rc = mongoc_read_concern_new ();
+   mongoc_read_concern_set_level (rc, MONGOC_READ_CONCERN_LEVEL_MAJORITY);
+   mongoc_collection_set_read_concern (collection, rc);
+   cursor = mongoc_collection_aggregate (
+      collection,
+      MONGOC_QUERY_NONE,
+      tmp_bson ("[{'a': 1}]"),
+      NULL,
+      NULL);
+
+   ASSERT (cursor);
+   future = future_cursor_next (cursor, &doc);
+
+   request = mock_server_receives_command (
+      server, "db", MONGOC_QUERY_SLAVE_OK,
+      "{"
+      "  'aggregate' : 'collection',"
+      "  'pipeline' : [{"
+      "      'a' : 1"
+      "  }],"
+      "  'cursor' : {  },"
+      "  'readConcern': { 'level': 'majority'}"
+      "}"
+   );
+
+   mock_server_replies_simple (request,
+                               "{'ok': 1,"
+                               " 'cursor': {"
+                               "    'id': 0,"
+                               "    'ns': 'db.collection',"
+                               "    'firstBatch': [{'_id': 123}]"
+                               "}}");
+
+   ASSERT (future_get_bool (future));
+   ASSERT_MATCH (doc, "{'_id': 123}");
+
+   /* cursor is completed */
+   assert (!mongoc_cursor_next (cursor, &doc));
+   mongoc_cursor_destroy (cursor);
+   request_destroy (request);
+   future_destroy (future);
+
+
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
+}
+
+
+
 void
 test_collection_install (TestSuite *suite)
 {
@@ -2381,7 +2958,9 @@ test_collection_install (TestSuite *suite)
                   "/Collection/bulk_insert/legacy/oversized_last_continue",
                   test_legacy_bulk_insert_oversized_last_continue);
 
+   TestSuite_Add (suite, "/Collection/copy", test_copy);
    TestSuite_Add (suite, "/Collection/insert", test_insert);
+   TestSuite_Add (suite, "/Collection/insert/oversize", test_legacy_insert_oversize_mongos);
    TestSuite_Add (suite, "/Collection/insert/keys", test_insert_command_keys);
    TestSuite_Add (suite, "/Collection/save", test_save);
    TestSuite_Add (suite, "/Collection/index", test_index);
@@ -2393,13 +2972,17 @@ test_collection_install (TestSuite *suite)
    TestSuite_Add (suite, "/Collection/remove", test_remove);
    TestSuite_Add (suite, "/Collection/count", test_count);
    TestSuite_Add (suite, "/Collection/count_with_opts", test_count_with_opts);
+   TestSuite_Add (suite, "/Collection/count/read_concern", test_count_read_concern);
+   TestSuite_AddFull (suite, "/Collection/count/read_concern_live", test_count_read_concern_live, NULL, NULL, mongod_supports_majority_read_concern);
    TestSuite_Add (suite, "/Collection/drop", test_drop);
    TestSuite_Add (suite, "/Collection/aggregate", test_aggregate);
    TestSuite_Add (suite, "/Collection/aggregate/large", test_aggregate_large);
+   TestSuite_Add (suite, "/Collection/aggregate/read_concern", test_aggregate_read_concern);
    TestSuite_AddFull (suite, "/Collection/aggregate/bypass_document_validation", test_aggregate_bypass, NULL, NULL, test_framework_skip_if_max_version_version_less_than_4);
    TestSuite_Add (suite, "/Collection/validate", test_validate);
    TestSuite_Add (suite, "/Collection/rename", test_rename);
    TestSuite_Add (suite, "/Collection/stats", test_stats);
+   TestSuite_Add (suite, "/Collection/find_read_concern", test_find_read_concern);
    TestSuite_Add (suite, "/Collection/find_and_modify", test_find_and_modify);
    TestSuite_Add (suite, "/Collection/find_and_modify/write_concern",
                   test_find_and_modify_write_concern_wire_32);

@@ -31,8 +31,6 @@
 
 BSON_BEGIN_DECLS
 
-#define FIND_COMMAND_WIRE_VERSION 4
-
 typedef struct _mongoc_cursor_interface_t mongoc_cursor_interface_t;
 
 
@@ -63,11 +61,11 @@ struct _mongoc_cursor_t
    unsigned                   end_of_event    : 1;
    unsigned                   has_fields      : 1;
    unsigned                   in_exhaust      : 1;
-   unsigned                   has_dollar      : 1;
 
    bson_t                     query;
    bson_t                     fields;
 
+   mongoc_read_concern_t     *read_concern;
    mongoc_read_prefs_t       *read_prefs;
 
    mongoc_query_flags_t       flags;
@@ -75,6 +73,7 @@ struct _mongoc_cursor_t
    uint32_t                   limit;
    uint32_t                   count;
    uint32_t                   batch_size;
+   uint32_t                   max_await_time_ms;
 
    char                       ns [140];
    uint32_t                   nslen;
@@ -102,14 +101,14 @@ mongoc_cursor_t         * _mongoc_cursor_new          (mongoc_client_t          
                                                        bool                          is_command,
                                                        const bson_t                 *query,
                                                        const bson_t                 *fields,
-                                                       const mongoc_read_prefs_t    *read_prefs);
+                                                       const mongoc_read_prefs_t    *read_prefs,
+                                                       const mongoc_read_concern_t  *read_concern);
 mongoc_cursor_t         *_mongoc_cursor_clone         (const mongoc_cursor_t        *cursor);
 void                     _mongoc_cursor_destroy       (mongoc_cursor_t              *cursor);
 bool                     _mongoc_read_from_buffer     (mongoc_cursor_t              *cursor,
                                                        const bson_t                **bson);
 bool                     _use_find_command            (const mongoc_cursor_t        *cursor,
                                                        const mongoc_server_stream_t *server_stream);
-void                     _mongoc_cursor_destroy       (mongoc_cursor_t              *cursor);
 mongoc_server_stream_t * _mongoc_cursor_fetch_stream  (mongoc_cursor_t              *cursor);
 void                     _mongoc_cursor_collection    (const mongoc_cursor_t        *cursor,
                                                        const char                  **collection,

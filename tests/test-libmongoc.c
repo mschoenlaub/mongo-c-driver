@@ -23,6 +23,7 @@
 #include "mongoc-topology-private.h"
 #include "mongoc-client-private.h"
 #include "mongoc-uri-private.h"
+#include "mongoc-util-private.h"
 
 #include "mongoc-tests.h"
 #include "TestSuite.h"
@@ -71,11 +72,6 @@ extern void test_write_concern_install           (TestSuite *suite);
 extern void test_x509_install                    (TestSuite *suite);
 extern void test_stream_tls_install              (TestSuite *suite);
 extern void test_stream_tls_error_install        (TestSuite *suite);
-#endif
-
-
-#ifdef _WIN32
-# define strcasecmp _stricmp
 #endif
 
 
@@ -1005,12 +1001,6 @@ test_framework_is_replset (void)
    return is_replset;
 }
 
-int
-test_framework_skip_if_single (void)
-{
-   return (test_framework_is_mongos () || test_framework_is_replset());
-}
-
 bool
 test_framework_server_is_secondary (mongoc_client_t *client,
                                     uint32_t server_id)
@@ -1178,6 +1168,12 @@ test_version_cmp (void)
 }
 
 int
+test_framework_skip_if_single (void)
+{
+   return (test_framework_is_mongos () || test_framework_is_replset());
+}
+
+int
 test_framework_skip_if_mongos (void)
 {
    return test_framework_is_mongos() ? 0 : 1;
@@ -1187,6 +1183,24 @@ int
 test_framework_skip_if_replset (void)
 {
    return test_framework_is_replset() ? 0 : 1;
+}
+
+int
+test_framework_skip_if_not_single (void)
+{
+   return !test_framework_skip_if_single ();
+}
+
+int
+test_framework_skip_if_not_mongos (void)
+{
+   return !test_framework_skip_if_mongos ();
+}
+
+int
+test_framework_skip_if_not_replset (void)
+{
+   return !test_framework_skip_if_replset ();
 }
 
 int test_framework_skip_if_max_version_version_less_than_4 (void)
