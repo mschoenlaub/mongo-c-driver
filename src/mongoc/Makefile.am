@@ -19,6 +19,7 @@ MONGOC_DEF_FILES = \
 INST_H_FILES = \
 	src/mongoc/mongoc.h \
 	src/mongoc/mongoc-apm.h \
+	src/mongoc/mongoc-apm-private.h \
 	src/mongoc/mongoc-array-private.h \
 	src/mongoc/mongoc-async-private.h \
 	src/mongoc/mongoc-async-cmd-private.h \
@@ -39,6 +40,7 @@ INST_H_FILES = \
 	src/mongoc/mongoc-cursor-transform-private.h \
 	src/mongoc/mongoc-cursor-private.h \
 	src/mongoc/mongoc-cursor.h \
+	src/mongoc/mongoc-crypto-private.h \
 	src/mongoc/mongoc-database-private.h \
 	src/mongoc/mongoc-database.h \
 	src/mongoc/mongoc-errno-private.h \
@@ -68,6 +70,7 @@ INST_H_FILES = \
 	src/mongoc/mongoc-memcmp-private.h \
 	src/mongoc/mongoc-opcode.h \
 	src/mongoc/mongoc-opcode-private.h \
+	src/mongoc/mongoc-openssl-private.h \
 	src/mongoc/mongoc-queue-private.h \
 	src/mongoc/mongoc-read-concern-private.h \
 	src/mongoc/mongoc-read-concern.h \
@@ -76,13 +79,19 @@ INST_H_FILES = \
 	src/mongoc/mongoc-rpc-private.h \
 	src/mongoc/mongoc-sasl-private.h \
 	src/mongoc/mongoc-scram-private.h \
+	src/mongoc/mongoc-secure-transport-private.h \
 	src/mongoc/mongoc-server-description.h \
 	src/mongoc/mongoc-server-description-private.h \
 	src/mongoc/mongoc-server-stream-private.h \
 	src/mongoc/mongoc-set-private.h \
 	src/mongoc/mongoc-socket.h \
 	src/mongoc/mongoc-socket-private.h \
-	src/mongoc/mongoc-ssl-private.h \
+	src/mongoc/mongoc-stream-tls-openssl-bio-private.h \
+	src/mongoc/mongoc-stream-tls-openssl-private.h \
+	src/mongoc/mongoc-stream-tls-openssl.h \
+	src/mongoc/mongoc-stream-tls-private.h \
+	src/mongoc/mongoc-stream-tls-secure-transport-private.h \
+	src/mongoc/mongoc-stream-tls-secure-transport.h \
 	src/mongoc/mongoc-stream-buffered.h \
 	src/mongoc/mongoc-stream-file.h \
 	src/mongoc/mongoc-stream-gridfs.h \
@@ -106,14 +115,19 @@ INST_H_FILES = \
 
 if ENABLE_SSL
 INST_H_FILES += \
+	src/mongoc/mongoc-crypto-openssl-private.h \
+	src/mongoc/mongoc-crypto-common-crypto-private.h \
 	src/mongoc/mongoc-rand.h \
 	src/mongoc/mongoc-rand-private.h \
 	src/mongoc/mongoc-stream-tls.h \
+	src/mongoc/mongoc-openssl-private.h \
+	src/mongoc/mongoc-secure-transport-private.h \
 	src/mongoc/mongoc-ssl.h
 endif
 
 MONGOC_SOURCES_SHARED += \
 	$(INST_H_FILES) \
+	src/mongoc/mongoc-apm.c \
 	src/mongoc/mongoc-array.c \
 	src/mongoc/mongoc-async.c \
 	src/mongoc/mongoc-async-cmd.c \
@@ -166,13 +180,38 @@ MONGOC_SOURCES_SHARED += \
 	src/mongoc/mongoc-write-command.c \
 	src/mongoc/mongoc-write-concern.c
 
+if ENABLE_CRYPTO
+MONGOC_SOURCES_SHARED += \
+	src/mongoc/mongoc-crypto.c \
+	src/mongoc/mongoc-scram.c
+endif
 if ENABLE_SSL
 MONGOC_SOURCES_SHARED += \
-	src/mongoc/mongoc-rand.c \
-	src/mongoc/mongoc-scram.c \
 	src/mongoc/mongoc-stream-tls.c \
 	src/mongoc/mongoc-ssl.c
 endif
+if ENABLE_LIBCRYPTO
+MONGOC_SOURCES_SHARED += \
+	src/mongoc/mongoc-crypto-openssl.c \
+	src/mongoc/mongoc-rand-openssl.c
+endif
+if ENABLE_OPENSSL
+MONGOC_SOURCES_SHARED += \
+	src/mongoc/mongoc-openssl.c \
+	src/mongoc/mongoc-stream-tls-openssl.c \
+	src/mongoc/mongoc-stream-tls-openssl-bio.c
+endif
+if ENABLE_COMMON_CRYPTO
+MONGOC_SOURCES_SHARED += \
+	src/mongoc/mongoc-crypto-common-crypto.c \
+	src/mongoc/mongoc-rand-common-crypto.c
+endif
+if ENABLE_SECURE_TRANSPORT
+MONGOC_SOURCES_SHARED += \
+	src/mongoc/mongoc-secure-transport.c \
+	src/mongoc/mongoc-stream-tls-secure-transport.c
+endif
+
 
 if ENABLE_SASL
 MONGOC_SOURCES_SHARED += src/mongoc/mongoc-sasl.c

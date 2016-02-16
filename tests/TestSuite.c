@@ -51,6 +51,9 @@
 #include "TestSuite.h"
 
 
+static int test_flags;
+
+
 #define TEST_VERBOSE   (1 << 0)
 #define TEST_NOFORK    (1 << 1)
 #define TEST_HELPONLY  (1 << 2)
@@ -296,6 +299,9 @@ TestSuite_Init (TestSuite *suite,
          suite->testname = strdup (argv [++i]);
       }
    }
+
+   /* HACK: copy flags to global var */
+   test_flags = suite->flags;
 }
 
 
@@ -467,12 +473,18 @@ TestSuite_RunTest (TestSuite *suite,       /* IN */
       Mutex_Lock (mutex);
       snprintf (buf, sizeof buf,
                 "    { \"status\": \"%s\", "
-                      "\"name\": \"%s\", "
+                      "\"test_file\": \"%s\", "
                       "\"seed\": \"%u\", "
+                      "\"start\": %u.%09u, "
+                      "\"end\": %u.%09u, "
                       "\"elapsed\": %u.%09u }%s\n",
                (status == 0) ? "PASS" : "FAIL",
                name,
                test->seed,
+               (unsigned)ts1.tv_sec,
+               (unsigned)ts1.tv_nsec,
+               (unsigned)ts2.tv_sec,
+               (unsigned)ts2.tv_nsec,
                (unsigned)ts3.tv_sec,
                (unsigned)ts3.tv_nsec,
                ((*count) == 1) ? "" : ",");
@@ -487,7 +499,7 @@ TestSuite_RunTest (TestSuite *suite,       /* IN */
       status = 0;
       Mutex_Lock (mutex);
       snprintf (buf, sizeof buf,
-                "    { \"status\": \"SKIP\", \"name\": \"%s\" },\n",
+                "    { \"status\": \"SKIP\", \"test_file\": \"%s\" },\n",
                 test->name);
       buf [sizeof buf - 1] = '\0';
       _Print_StdOut ("%s", buf);
@@ -572,10 +584,10 @@ TestSuite_PrintJsonHeader (TestSuite *suite, /* IN */
             "  },\n"
             "  \"options\": {\n"
             "    \"parallel\": \"%s\",\n"
-            "    \"fork\": \"%s\"\n"
+            "    \"fork\": \"%s\",\n"
             "    \"tracing\": \"%s\"\n"
             "  },\n"
-            "  \"tests\": [\n",
+            "  \"results\": [\n",
             uri_str,
             test_framework_is_mongos () ? "true" : "false",
             major_version, minor_version, build,
@@ -618,10 +630,10 @@ TestSuite_PrintJsonHeader (TestSuite *suite, /* IN */
             "  },\n"
             "  \"options\": {\n"
             "    \"parallel\": \"%s\",\n"
-            "    \"fork\": \"%s\"\n"
+            "    \"fork\": \"%s\",\n"
             "    \"tracing\": \"%s\"\n"
             "  },\n"
-            "  \"tests\": [\n",
+            "  \"results\": [\n",
             uri_str,
             test_framework_is_mongos () ? "true" : "false",
             u.sysname,
@@ -852,4 +864,11 @@ TestSuite_Destroy (TestSuite *suite)
    free (suite->name);
    free (suite->prgname);
    free (suite->testname);
+}
+
+
+int
+test_suite_debug_output (void)
+{
+   return 0 != (test_flags & TEST_DEBUGOUTPUT);
 }

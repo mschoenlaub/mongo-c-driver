@@ -101,6 +101,7 @@ test_libmongoc_SOURCES = \
 	tests/test-mongoc-cluster.c \
 	tests/test-mongoc-collection.c \
 	tests/test-mongoc-collection-find.c \
+	tests/test-mongoc-command-monitoring.c \
 	tests/test-mongoc-cursor.c \
 	tests/test-mongoc-database.c \
 	tests/test-mongoc-exhaust.c \
@@ -116,7 +117,7 @@ test_libmongoc_SOURCES = \
 	tests/test-mongoc-socket.c \
 	tests/test-mongoc-sdam.c \
 	tests/test-mongoc-server-selection.c \
-        tests/test-mongoc-server-selection-errors.c \
+	tests/test-mongoc-server-selection-errors.c \
 	tests/test-mongoc-set.c \
 	tests/test-mongoc-stream.c \
 	tests/test-mongoc-thread.c \
@@ -168,7 +169,7 @@ else
 test: $(TEST_PROGS)
 endif
 	@ for TEST_PROG in $(TEST_PROGS) ; do \
-		./$$TEST_PROG $(TEST_ARGS) -F test.log; \
+		./$$TEST_PROG $(TEST_ARGS) -F test-results.json; \
 	done
 
 valgrind: $(TEST_PROGS)
@@ -185,7 +186,7 @@ endif
 local-check:
 
 DISTCLEANFILES += \
-	test.log \
+	test-results.json \
 	tests/trust_dir/ca.db.serial \
 	tests/trust_dir/done \
 	tests/trust_dir/keys/rev.mongodb.com.pem \
@@ -264,6 +265,7 @@ EXTRA_DIST += \
 	tests/trust_dir.cnf \
 	tests/make_ca.pl \
 	tests/c_rehash \
+	$(wildcard tests/json/command_monitoring/*.json) \
 	$(wildcard tests/json/server_discovery_and_monitoring/*/*.json) \
 	$(wildcard tests/json/server_selection/rtt/*.json) \
 	$(wildcard tests/json/server_selection/server_selection/*/*/*.json)

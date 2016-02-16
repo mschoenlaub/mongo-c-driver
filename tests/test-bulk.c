@@ -18,14 +18,14 @@ static char *gFourMBString;
 static size_t gFourMB = 1024 * 1024 * 4;
 
 
-void
+static void
 test_bulk_cleanup ()
 {
    bson_free (gHugeString);
 }
 
 
-void
+static void
 init_huge_string (mongoc_client_t *client)
 {
    int32_t max_bson_size;
@@ -44,7 +44,7 @@ init_huge_string (mongoc_client_t *client)
 }
 
 
-const char *
+static const char *
 huge_string (mongoc_client_t *client)
 {
    init_huge_string (client);
@@ -52,7 +52,7 @@ huge_string (mongoc_client_t *client)
 }
 
 
-size_t
+static size_t
 huge_string_length (mongoc_client_t *client)
 {
    init_huge_string (client);
@@ -60,7 +60,7 @@ huge_string_length (mongoc_client_t *client)
 }
 
 
-void
+static void
 init_four_mb_string ()
 {
    if (!gFourMBString) {
@@ -72,7 +72,7 @@ init_four_mb_string ()
 }
 
 
-const char *
+static const char *
 four_mb_string ()
 {
    init_four_mb_string ();
@@ -95,7 +95,7 @@ four_mb_string ()
  *--------------------------------------------------------------------------
  */
 
-bool
+static bool
 server_has_write_commands (mongoc_client_t *client)
 {
    bson_t *ismaster_cmd = tmp_bson ("{'ismaster': 1}");
@@ -134,7 +134,7 @@ server_has_write_commands (mongoc_client_t *client)
  *--------------------------------------------------------------------------
  */
 
-void
+static void
 check_n_modified (bool          has_write_commands,
                   const bson_t *reply,
                   int32_t       n_modified)
@@ -166,7 +166,7 @@ check_n_modified (bool          has_write_commands,
  *--------------------------------------------------------------------------
  */
 
-void
+static void
 assert_error_count (int           len,
                     const bson_t *reply)
 {
@@ -198,7 +198,7 @@ assert_error_count (int           len,
  *--------------------------------------------------------------------------
  */
 
-void
+static void
 assert_n_inserted (int           n,
                    const bson_t *reply)
 {
@@ -225,7 +225,7 @@ assert_n_inserted (int           n,
  *--------------------------------------------------------------------------
  */
 
-void
+static void
 assert_n_removed (int           n,
                   const bson_t *reply)
 {
@@ -266,7 +266,7 @@ assert_n_removed (int           n,
  *--------------------------------------------------------------------------
  */
 
-bool
+static bool
 oid_created_on_client (const bson_t *doc)
 {
    bson_oid_t new_oid;
@@ -305,7 +305,7 @@ get_test_collection (mongoc_client_t *client,
 }
 
 
-void
+static void
 create_unique_index (mongoc_collection_t *collection)
 {
    mongoc_index_opt_t opt;
@@ -876,8 +876,65 @@ test_replace_one (bool ordered)
 }
 
 
+/*
+ * check that we include command overhead in msg size when deciding to split,
+ * CDRIVER-1082
+ */
 static void
 test_upsert_large (void)
+{
+   mongoc_bulk_operation_t *bulk;
+   mongoc_collection_t *collection;
+   mongoc_client_t *client;
+   bool has_write_cmds;
+   bson_t *selector = tmp_bson ("{'_id': 'aaaaaaaaaa'}");
+   size_t sz = 8396691;  /* a little over 8 MB */
+   char *large_str = bson_malloc (sz);
+   bson_t update = BSON_INITIALIZER;
+   bson_t child;
+   bson_error_t error;
+   int i;
+   bson_t reply;
+
+   client = test_framework_client_new ();
+   has_write_cmds = server_has_write_commands (client);
+   collection = get_test_collection (client, "test_upsert_large");
+   bulk = mongoc_collection_create_bulk_operation (collection, true, NULL);
+
+   bson_append_document_begin (&update, "$set", 4, &child);
+   bson_append_utf8 (&child, "big", 3, large_str, (int) sz);
+   bson_append_document_end (&update, &child);
+
+   /* two 8MB+ docs could fit in 16MB + 16K, if not for command overhead,
+    * check the driver splits into two msgs */
+   for (i = 0; i < 2; i++) {
+      mongoc_bulk_operation_update (bulk, selector, &update, true);
+   }
+
+   ASSERT_OR_PRINT ((bool) mongoc_bulk_operation_execute (bulk, &reply, &error),
+                    error);
+
+   ASSERT_MATCH (&reply, "{'nInserted': 0,"
+                         " 'nMatched':  1,"
+                         " 'nRemoved':  0,"
+                         " 'nUpserted': 1,"
+                         " 'upserted': [{'index': 0, '_id': 'aaaaaaaaaa'}],"
+                         " 'writeErrors': []}");
+
+   check_n_modified (has_write_cmds, &reply, 0);
+   ASSERT_COUNT (1, collection);
+
+   bson_destroy (&reply);
+   mongoc_bulk_operation_destroy (bulk);
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   bson_destroy (&update);
+   bson_free (large_str);
+}
+
+
+static void
+test_upsert_huge (void)
 {
    mongoc_bulk_operation_t *bulk;
    mongoc_collection_t *collection;
@@ -897,7 +954,7 @@ test_upsert_large (void)
    assert (client);
    has_write_cmds = server_has_write_commands (client);
 
-   collection = get_test_collection (client, "test_upsert_large");
+   collection = get_test_collection (client, "test_upsert_huge");
    assert (collection);
 
    bulk = mongoc_collection_create_bulk_operation (collection, true, NULL);
@@ -2080,6 +2137,7 @@ test_large_inserts_ordered (void)
 
    bson_destroy (&reply);
    mongoc_bulk_operation_destroy (bulk);
+   mongoc_cursor_destroy (cursor);
    mongoc_collection_destroy (collection);
    bson_destroy (huge_doc);
    mongoc_client_destroy (client);
@@ -2852,6 +2910,8 @@ test_bulk_install (TestSuite *suite)
                   test_upsert_unordered);
    TestSuite_Add (suite, "/BulkOperation/upsert_large",
                   test_upsert_large);
+   TestSuite_Add (suite, "/BulkOperation/upsert_huge",
+                  test_upsert_huge);
    TestSuite_Add (suite, "/BulkOperation/upserted_index_ordered",
                   test_upserted_index_ordered);
    TestSuite_Add (suite, "/BulkOperation/upserted_index_unordered",

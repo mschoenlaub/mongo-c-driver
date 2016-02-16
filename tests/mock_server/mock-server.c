@@ -53,7 +53,7 @@ struct _mock_server_t
    int last_autoresponder_id;
    int64_t start_time;
 
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
    mongoc_ssl_opt_t *ssl_opts;
 #endif
 };
@@ -192,7 +192,7 @@ mock_server_down (void)
 }
 
 
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
 
 /*--------------------------------------------------------------------------
  *
@@ -1195,17 +1195,24 @@ mock_server_replies (request_t *request,
                      int32_t number_returned,
                      const char *docs_json)
 {
-   char *quotes_replaced = single_quotes_to_double (docs_json);
+   char *quotes_replaced;
    bson_t doc;
    bson_error_t error;
    bool r;
 
    assert (request);
 
-   r = bson_init_from_json (&doc, quotes_replaced, -1, &error);
-   if (!r) {
-      MONGOC_WARNING ("%s", error.message);
-      return;
+   if (docs_json) {
+      quotes_replaced = single_quotes_to_double (docs_json);
+      r = bson_init_from_json (&doc, quotes_replaced, -1, &error);
+      if (!r) {
+         MONGOC_WARNING ("%s", error.message);
+         return;
+      }
+
+      bson_free (quotes_replaced);
+   } else {
+      r = bson_init_from_json (&doc, "{}", -1, &error);
    }
 
    mock_server_reply_multi (request,
@@ -1214,7 +1221,6 @@ mock_server_replies (request_t *request,
                             1,
                             cursor_id);
    bson_destroy (&doc);
-   bson_free (quotes_replaced);
 }
 
 
@@ -1239,7 +1245,31 @@ void
 mock_server_replies_simple (request_t *request,
                             const char *docs_json)
 {
-   mock_server_replies (request, 0, 0, 0, 1, docs_json);
+   mock_server_replies (request, MONGOC_REPLY_NONE, 0, 0, 1, docs_json);
+}
+
+
+
+/*--------------------------------------------------------------------------
+ *
+ * mock_server_replies_ok_and_destroys --
+ *
+ *       Respond to a client request.
+ *
+ * Returns:
+ *       None.
+ *
+ * Side effects:
+ *       Sends an OP_REPLY with "{ok: 1}" to the client.
+ *
+ *--------------------------------------------------------------------------
+ */
+
+void
+mock_server_replies_ok_and_destroys (request_t *request)
+{
+   mock_server_replies (request, MONGOC_REPLY_NONE, 0, 0, 1, "{'ok': 1}");
+   request_destroy (request);
 }
 
 
@@ -1457,7 +1487,7 @@ main_thread (void *data)
 
          client_stream = mongoc_stream_socket_new (client_sock);
 
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
          if (server->ssl_opts) {
             client_stream = mongoc_stream_tls_new (client_stream,
                                                    server->ssl_opts, 0);

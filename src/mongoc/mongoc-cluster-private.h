@@ -57,6 +57,7 @@ typedef struct _mongoc_cluster_node_t
 
 typedef struct _mongoc_cluster_t
 {
+   int64_t          operation_id;
    uint32_t         request_id;
    uint32_t         sockettimeoutms;
    uint32_t         socketcheckintervalms;
@@ -126,17 +127,18 @@ mongoc_cluster_stream_for_server (mongoc_cluster_t *cluster,
                                   bson_error_t *error);
 
 bool
-mongoc_cluster_run_command_rpc (mongoc_cluster_t *cluster,
-                                mongoc_stream_t  *stream,
-                                const char       *command_name,
-                                mongoc_rpc_t     *rpc,
-                                mongoc_rpc_t     *reply_rpc,
-                                mongoc_buffer_t  *buffer,
-                                bson_error_t     *error);
+mongoc_cluster_run_command_monitored (mongoc_cluster_t         *cluster,
+                                      mongoc_server_stream_t   *server_stream,
+                                      mongoc_query_flags_t      flags,
+                                      const char               *db_name,
+                                      const bson_t             *command,
+                                      bson_t                   *reply,
+                                      bson_error_t             *error);
 
 bool
 mongoc_cluster_run_command (mongoc_cluster_t    *cluster,
                             mongoc_stream_t     *stream,
+                            uint32_t             server_id,
                             mongoc_query_flags_t flags,
                             const char          *db_name,
                             const bson_t        *command,

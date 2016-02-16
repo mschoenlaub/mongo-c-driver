@@ -27,6 +27,7 @@ int64_t test_framework_getenv_int64 (const char *name,
                                      int64_t default_value);
 char *test_framework_get_host (void);
 uint16_t test_framework_get_port (void);
+void test_framework_get_host_list (mongoc_host_list_t *host_list);
 char *test_framework_get_admin_user (void);
 char *test_framework_get_admin_password (void);
 bool test_framework_get_ssl (void);
@@ -39,7 +40,7 @@ char *test_framework_get_uri_str (void);
 char *test_framework_get_unix_domain_socket_uri_str (void);
 char *test_framework_get_unix_domain_socket_path (void);
 mongoc_uri_t *test_framework_get_uri (void);
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
 const mongoc_ssl_opt_t *test_framework_get_ssl_opts (void);
 #endif
 void test_framework_set_ssl_opts (mongoc_client_t *client);

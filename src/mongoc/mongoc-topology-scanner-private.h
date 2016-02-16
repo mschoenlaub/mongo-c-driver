@@ -28,6 +28,10 @@
 #include "mongoc-async-cmd-private.h"
 #include "mongoc-host-list.h"
 
+#ifdef MONGOC_ENABLE_SSL
+#include "mongoc-ssl.h"
+#endif
+
 BSON_BEGIN_DECLS
 
 typedef void (*mongoc_topology_scanner_cb_t)(uint32_t      id,

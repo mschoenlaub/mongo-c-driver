@@ -709,9 +709,11 @@ mongoc_collection_count_with_opts (mongoc_collection_t       *collection,  /* IN
        bson_concat(&cmd, opts);
    }
 
-   success = mongoc_cluster_run_command (cluster, server_stream->stream,
-                                         MONGOC_QUERY_SLAVE_OK, collection->db,
-                                         &cmd, &reply, error);
+   success = mongoc_cluster_run_command_monitored (cluster,
+                                                   server_stream,
+                                                   MONGOC_QUERY_SLAVE_OK,
+                                                   collection->db,
+                                                   &cmd, &reply, error);
 
    if (success && bson_iter_init_find(&iter, &reply, "n")) {
       ret = bson_iter_as_int64(&iter);
@@ -1270,7 +1272,9 @@ mongoc_collection_insert_bulk (mongoc_collection_t           *collection,
 
    write_flags.ordered = !(flags & MONGOC_INSERT_CONTINUE_ON_ERROR);
 
-   _mongoc_write_command_init_insert (&command, NULL, write_flags, true);
+   _mongoc_write_command_init_insert (&command, NULL, write_flags,
+                                      ++collection->client->cluster.operation_id,
+                                      true);
 
    for (i = 0; i < n_documents; i++) {
       _mongoc_write_command_insert_append (&command, documents[i]);
@@ -1355,7 +1359,9 @@ mongoc_collection_insert (mongoc_collection_t          *collection,
    }
 
    _mongoc_write_result_init (&result);
-   _mongoc_write_command_init_insert (&command, document, write_flags, false);
+   _mongoc_write_command_init_insert (&command, document, write_flags,
+                                      ++collection->client->cluster.operation_id,
+                                      false);
 
    _mongoc_collection_write_command_execute (&command, collection,
                                              write_concern, &result);
@@ -1446,7 +1452,8 @@ mongoc_collection_update (mongoc_collection_t          *collection,
                                       update,
                                       !!(flags & MONGOC_UPDATE_UPSERT),
                                       !!(flags & MONGOC_UPDATE_MULTI_UPDATE),
-                                      write_flags);
+                                      write_flags,
+                                      ++collection->client->cluster.operation_id);
 
    _mongoc_collection_write_command_execute (&command, collection,
                                              write_concern, &result);
@@ -1581,7 +1588,8 @@ mongoc_collection_remove (mongoc_collection_t          *collection,
    multi = !(flags & MONGOC_REMOVE_SINGLE_REMOVE);
 
    _mongoc_write_result_init (&result);
-   _mongoc_write_command_init_delete (&command, selector, multi, write_flags);
+   _mongoc_write_command_init_delete (&command, selector, multi, write_flags,
+                                      ++collection->client->cluster.operation_id);
 
    _mongoc_collection_write_command_execute (&command, collection,
                                              write_concern, &result);
@@ -2160,9 +2168,10 @@ mongoc_collection_find_and_modify_with_opts (mongoc_collection_t                
       }
    }
 
-   ret = mongoc_cluster_run_command (cluster, server_stream->stream,
-                                     MONGOC_QUERY_NONE, collection->db,
-                                     &command, &reply_local, error);
+   ret = mongoc_cluster_run_command_monitored (cluster, server_stream,
+                                               MONGOC_QUERY_NONE,
+                                               collection->db, &command,
+                                               &reply_local, error);
 
    if (bson_iter_init_find (&iter, &reply_local, "writeConcernError") &&
          BSON_ITER_HOLDS_DOCUMENT (&iter)) {

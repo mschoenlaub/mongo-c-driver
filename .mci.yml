@@ -53,9 +53,18 @@ c_driver_variables:
     - name: "integration-test-latest-replica-set-no-auth"
     - name: "integration-test-latest-sharded-no-auth"
 
+## We don't have OSX SSL (Enterprise) Builds until 3.1.x
+  ssl_osx_test_list: &ssl_osx_tests
+    - name: "compile"
+    - name: "integration-test-latest-ssl"
+    - name: "integration-test-latest-ssl-no-auth"
+
   ssl_test_list: &ssl_tests
     - name: "compile"
     - name: "integration-test-3.0-ssl"
+    - name: "integration-test-3.0-ssl-no-auth"
+    - name: "integration-test-latest-ssl"
+    - name: "integration-test-latest-ssl-no-auth"
 
 ## Common download urls (merge in as hashes)
   mongo_download_url_prefixes:
@@ -79,6 +88,8 @@ c_driver_variables:
       mongo_url_prefix: "http://downloads.mongodb.org/linux/mongodb-linux-i686-"
     osx-108: &mongo_url_osx_108
       mongo_url_prefix: "http://downloads.mongodb.org/osx/mongodb-osx-x86_64-"
+    osx-108: &mongo_url_osx_108_enterprise
+      mongo_url_prefix: "http://downloads.mongodb.com/osx/mongodb-osx-x86_64-enterprise-"
     solaris: &mongo_url_solaris
       mongo_url_prefix: "http://downloads.mongodb.org/sunos5/mongodb-sunos5-x86_64-"
 
@@ -151,6 +162,24 @@ c_driver_variables:
           ./mongodb/bin/mongo $MONGO_SHELL_CONNECTION_FLAGS --eval 'printjson(db.isMaster())' admin
 
     compile:
+      osx_openssl: &compile_osx_openssl
+        compile_script: |
+          set -o errexit
+          set -o verbose
+          ./configure --enable-optimizations --enable-man-pages --enable-sasl --enable-openssl --enable-maintainer-flags --enable-debug --with-libbson=bundled
+          make -j8
+      osx_nativessl: &compile_osx_nativessl
+        compile_script: |
+          set -o errexit
+          set -o verbose
+          ./configure --enable-optimizations --enable-man-pages --enable-sasl --enable-secure-transport --enable-maintainer-flags --enable-debug --with-libbson=bundled
+          make -j8
+      osx_nossl: &compile_osx_nossl
+        compile_script: |
+          set -o errexit
+          set -o verbose
+          ./configure --enable-optimizations --enable-man-pages --enable-sasl --enable-ssl=no --enable-maintainer-flags --enable-debug --with-libbson=bundled
+          make -j8
       unix: &compile_unix
         compile_script: |
           set -o errexit
@@ -191,13 +220,6 @@ c_driver_variables:
           "$dumpbin" /HEADERS Debug/mongoc-1.0.lib | head -n 25
           "$MSBUILD" /m INSTALL.vcxproj
 
-    username_password:
-      common: &username_password_common
-        set_username_password: |
-          export MONGOC_TEST_USER=bob
-          export MONGOC_TEST_PASSWORD=pwd123
-          export MONGO_SHELL_CONNECTION_FLAGS="-ubob -ppwd123"
-
     connection_flags:
       ssl: &connection_flags_ssl
         set_connection_flags: |
@@ -215,7 +237,7 @@ c_driver_variables:
           export PATH=$PATH:`pwd`/Debug:`pwd`/src/libbson/Debug
           export MONGOC_TEST_FUTURE_TIMEOUT_MS=30000
           export MONGOC_ENABLE_MAJORITY_READ_CONCERN=on
-          ./Debug/test-libmongoc.exe -d -f -p
+          ./Debug/test-libmongoc.exe -p -d -F test-results.json
       solaris: &run_integration_tests_solaris
         run_integration_tests: |
           export MONGOC_TEST_FUTURE_TIMEOUT_MS=30000
@@ -224,26 +246,21 @@ c_driver_variables:
           export SASL_CFLAGS="-I/opt/csw/include/"
           export SASL_LIBS="-L/opt/csw/lib/amd64/ -lsasl2"
           export LD_LIBRARY_PATH="/opt/csw/lib/amd64/"
-          make TEST_ARGS="-f -p -d" check
+          make TEST_ARGS="-p -d -F test-results.json" check
 
       unix: &run_integration_tests_unix
         run_integration_tests: |
           export MONGOC_TEST_FUTURE_TIMEOUT_MS=30000
           export MONGOC_ENABLE_MAJORITY_READ_CONCERN=on
-          make TEST_ARGS="-f -p -d" check
+          make TEST_ARGS="-p -d -F test-results.json" check
 
 ## Other OS-specific attributes, grouped by OS
   unix_common: &unix_common
-    <<: *username_password_common
     <<: *compile_unix
     <<: *mongo_orchestration_unix
     <<: *run_integration_tests_unix
     <<: *start_topology_command
     <<: *unix_path
-
-  osx_common: &osx_common
-    <<: *unix_common
-    <<: *osx_path
 
   solaris_common: &solaris_common
     <<: *unix_common
@@ -251,7 +268,6 @@ c_driver_variables:
     <<: *solaris_path
 
   solaris64_common: &solaris64_common
-    <<: *username_password_common
     <<: *compile_unix
     <<: *mongo_orchestration_unix
     <<: *run_integration_tests_solaris
@@ -271,7 +287,6 @@ c_driver_variables:
       cmake_defs: "-DENABLE_SSL:BOOL=OFF -DENABLE_SASL:BOOL=OFF"
       msbuild: /cygdrive/c/Windows/Microsoft.NET/Framework/v4.0.30319/MSBuild.exe
     msvc2010: &with_msvc2010
-      <<: *username_password_common
       generator: Visual Studio 10 2010 Win64
       msbuild: /cygdrive/c/Windows/Microsoft.NET/Framework64/v4.0.30319/MSBuild.exe
       dllpath: "c:/openssl/bin,c:/sasl/bin"
@@ -281,7 +296,6 @@ c_driver_variables:
       cmake_defs: "-DENABLE_SSL:BOOL=OFF -DENABLE_SASL:BOOL=OFF"
       msbuild: /cygdrive/c/Program Files (x86)/MSBuild/12.0/Bin/MSBuild.exe
     msvc2013: &with_msvc2013
-      <<: *username_password_common
       generator: Visual Studio 12 2013 Win64
       msbuild: /cygdrive/c/Program Files (x86)/MSBuild/12.0/Bin/MSBuild.exe
       dllpath: "c:/openssl/bin,c:/sasl/bin"
@@ -291,7 +305,6 @@ c_driver_variables:
       cmake_defs: "-DENABLE_SSL:BOOL=OFF -DENABLE_SASL:BOOL=OFF"
       msbuild: /cygdrive/c/Program Files (x86)/MSBuild/14.0/Bin/MSBuild.exe
     msvc2015: &with_msvc2015
-      <<: *username_password_common
       generator: Visual Studio 14 2015 Win64
       msbuild: /cygdrive/c/Program Files (x86)/MSBuild/14.0/Bin/MSBuild.exe
       dllpath: "c:/openssl/bin,c:/sasl/bin"
@@ -391,12 +404,12 @@ functions:
         - key: "topology_type"
           value: "server"
 
-  "set-topology-standalone-ssl" :
+  "set topology standalone ssl" :
     command: expansions.update
     params:
       updates:
         - key: "orchestration_file"
-          value: "ssl.json"
+          value: "auth-ssl.json"
         - key: "topology_type"
           value: "server"
 
@@ -417,6 +430,15 @@ functions:
           value: "auth.json"
         - key: "topology_type"
           value: "sharded_cluster"
+
+  "set topology standalone ssl no auth" :
+    command: expansions.update
+    params:
+      updates:
+        - key: "orchestration_file"
+          value: "basic-ssl.json"
+        - key: "topology_type"
+          value: "server"
 
   "set topology standalone no auth" :
     command: expansions.update
@@ -508,13 +530,23 @@ functions:
       script: |
         set -o errexit
         set -o verbose
+        if [ ${use_auth|false} = true ]; then
+           export MONGOC_TEST_USER=bob
+           export MONGOC_TEST_PASSWORD=pwd123
+           export MONGO_SHELL_CONNECTION_FLAGS="-ubob -ppwd123"
+        fi
         export ORCHESTRATION_FILE="orchestration_configs/${topology_type}s/${orchestration_file}"
         export ORCHESTRATION_URL="http://localhost:8889/v1/${topology_type}s"
-        ${set_username_password}
         ${set_connection_flags}
         ${start_mongo_orchestration}
         ${start_topology}
         ${run_integration_tests}
+
+  "report results" :
+    command: attach.results
+    params:
+      file_location: "mongo-c-driver/test-results.json"
+
 
 
 #######################################
@@ -559,8 +591,6 @@ tasks:
               script: |
                 set -o errexit
                 set -o verbose
-                sudo apt-get update
-                sudo apt-get install -y yelp-tools yelp-xsl
                 ./autogen.sh --enable-man-pages --enable-html-docs --enable-sasl --enable-ssl --enable-maintainer-flags --enable-debug --with-libbson=bundled
                 make dist
                 mv mongo-c-driver*.tar.gz ../mongo-c-driver-archive.tar.gz
@@ -609,6 +639,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.4-replica-set"
       depends_on:
@@ -620,6 +653,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.4-sharded"
       depends_on:
@@ -631,6 +667,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.6"
       depends_on:
@@ -642,6 +681,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.6-replica-set"
       depends_on:
@@ -653,6 +695,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.6-sharded"
       depends_on:
@@ -664,6 +709,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-3.0"
       depends_on:
@@ -675,6 +723,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-3.0-replica-set"
       depends_on:
@@ -686,6 +737,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-3.0-sharded"
       depends_on:
@@ -697,6 +751,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-latest"
       depends_on:
@@ -708,6 +765,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-latest-replica-set"
       depends_on:
@@ -719,6 +779,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-latest-sharded"
       depends_on:
@@ -730,6 +793,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-2.4-no-auth"
       depends_on:
@@ -741,6 +807,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-2.4-replica-set-no-auth"
       depends_on:
@@ -752,6 +819,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-2.4-sharded-no-auth"
       depends_on:
@@ -763,6 +831,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-2.6-no-auth"
       depends_on:
@@ -774,6 +843,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-2.6-replica-set-no-auth"
       depends_on:
@@ -785,6 +855,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-2.6-sharded-no-auth"
       depends_on:
@@ -796,6 +867,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-3.0-no-auth"
       depends_on:
@@ -807,6 +879,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-3.0-replica-set-no-auth"
       depends_on:
@@ -818,6 +891,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-3.0-sharded-no-auth"
       depends_on:
@@ -829,6 +903,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-latest-no-auth"
       depends_on:
@@ -840,6 +915,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-latest-replica-set-no-auth"
       depends_on:
@@ -851,6 +927,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-latest-sharded-no-auth"
       depends_on:
@@ -862,6 +939,7 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+        - func: "report results"
 
     - name: "integration-test-latest-with-MMAPv1"
       depends_on:
@@ -874,6 +952,9 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-3.0-with-WiredTiger"
       depends_on:
@@ -886,18 +967,66 @@ tasks:
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
 
     - name: "integration-test-3.0-ssl"
       depends_on:
         - name: "compile"
       commands:
-        - func: "set-topology-standalone-ssl"
+        - func: "set topology standalone ssl"
         - func: "set version 3.0"
         - func: "create working directory"
         - func: "fetch artifacts"
         - func: "fetch mongodb"
         - func: "copy certificates"
         - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
+
+    - name: "integration-test-3.0-ssl-no-auth"
+      depends_on:
+        - name: "compile"
+      commands:
+        - func: "set topology standalone ssl no auth"
+        - func: "set version 3.0"
+        - func: "create working directory"
+        - func: "fetch artifacts"
+        - func: "fetch mongodb"
+        - func: "copy certificates"
+        - func: "run integration tests"
+        - func: "report results"
+
+    - name: "integration-test-latest-ssl"
+      depends_on:
+        - name: "compile"
+      commands:
+        - func: "set topology standalone ssl"
+        - func: "set version latest"
+        - func: "create working directory"
+        - func: "fetch artifacts"
+        - func: "fetch mongodb"
+        - func: "copy certificates"
+        - func: "run integration tests"
+          vars:
+            use_auth: true
+        - func: "report results"
+
+    - name: "integration-test-latest-ssl-no-auth"
+      depends_on:
+        - name: "compile"
+      commands:
+        - func: "set topology standalone ssl no auth"
+        - func: "set version latest"
+        - func: "create working directory"
+        - func: "fetch artifacts"
+        - func: "fetch mongodb"
+        - func: "copy certificates"
+        - func: "run integration tests"
+        - func: "report results"
+
 
 #######################################
 #           Buildvariants             #
@@ -988,12 +1117,51 @@ buildvariants:
 #         OS X Buildvariants          #
 #######################################
 
-- name: os-x-108-64
-  display_name: "OSX 10.8 clang 64"
+- name: os-x-108-64-nossl
+  display_name: "OSX 10.8 clang 64 NOSSL"
   expansions:
     <<: *mongo_url_osx_108
     <<: *cflags_osx_108
-    <<: *osx_common
+    <<: *compile_osx_nossl
+    <<: *mongo_orchestration_unix
+    <<: *run_integration_tests_unix
+    <<: *start_topology_command
+    <<: *unix_path
+    <<: *osx_path
+  run_on:
+  - osx-108
+  tasks: *topology_tests
+
+- name: os-x-108-64-openssl
+  display_name: "OSX 10.8 clang 64 OpenSSL"
+  expansions:
+    <<: *mongo_url_osx_108_enterprise
+    <<: *cflags_osx_108
+    <<: *compile_osx_openssl
+    <<: *mongo_orchestration_unix
+    <<: *run_integration_tests_unix
+    <<: *start_topology_command
+    <<: *unix_path
+    <<: *osx_path
+    <<: *ssl
+  run_on:
+  - osx-108
+  tasks: *ssl_osx_tests
+
+# Missing <<: *ssl and the test shuold be: *ssl_osx_tests
+# That should be added once Native TLS works
+# For now, it just tests Common Crypto
+- name: os-x-108-64-nativessl
+  display_name: "OSX 10.8 clang 64 NativeSSL"
+  expansions:
+    <<: *mongo_url_osx_108
+    <<: *cflags_osx_108
+    <<: *compile_osx_nativessl
+    <<: *mongo_orchestration_unix
+    <<: *run_integration_tests_unix
+    <<: *start_topology_command
+    <<: *unix_path
+    <<: *osx_path
   run_on:
   - osx-108
   tasks: *topology_tests

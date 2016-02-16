@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 2.8)
 
 project (libmongoc)
 
+# CDRIVER-749 TODO: This needs to be updated for --enable-openssl and friends
 option(ENABLE_SSL
        "Use OpenSSL for TLS connections and SCRAM-SHA-1 authentication.\
 NOTE: OpenSSL is required for authenticating to MongoDB 3.0 and later."
@@ -21,9 +22,17 @@ if (ENABLE_SSL)
 endif ()
 if (ENABLE_SSL AND OPENSSL_FOUND)
    set (MONGOC_ENABLE_SSL 1)
+   set (MONGOC_ENABLE_OPENSSL 1)
+   set (MONGOC_ENABLE_LIBCRYPTO 1)
+   set (MONGOC_ENABLE_CRYPTO 1)
 else ()
    set (MONGOC_ENABLE_SSL 0)
+   set (MONGOC_ENABLE_OPENSSL 0)
+   set (MONGOC_ENABLE_LIBCRYPTO 0)
+   set (MONGOC_ENABLE_CRYPTO 0)
 endif ()
+set (MONGOC_ENABLE_SECURE_TRANSPORT 0)
+set (MONGOC_ENABLE_COMMON_CRYPTO 0)
 
 if (ENABLE_SASL)
    include(FindSASL2)
@@ -94,6 +103,7 @@ if (APPLE)
 endif()
 
 set (SOURCES
+   ${SOURCE_DIR}/src/mongoc/mongoc-apm.c
    ${SOURCE_DIR}/src/mongoc/mongoc-array.c
    ${SOURCE_DIR}/src/mongoc/mongoc-async.c
    ${SOURCE_DIR}/src/mongoc/mongoc-async-cmd.c
@@ -156,6 +166,7 @@ set (HEADERS
    ${PROJECT_BINARY_DIR}/src/mongoc/mongoc-version.h
    ${SOURCE_DIR}/src/mongoc/mongoc.h
    ${SOURCE_DIR}/src/mongoc/mongoc-apm.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-apm-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-bulk-operation.h
    ${SOURCE_DIR}/src/mongoc/mongoc-client.h
    ${SOURCE_DIR}/src/mongoc/mongoc-client-pool.h
@@ -182,6 +193,10 @@ set (HEADERS
    ${SOURCE_DIR}/src/mongoc/mongoc-server-description.h
    ${SOURCE_DIR}/src/mongoc/mongoc-socket.h
    ${SOURCE_DIR}/src/mongoc/mongoc-socket-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-bio-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-buffered.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-file.h
@@ -198,10 +213,15 @@ if (OPENSSL_FOUND)
       ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.h
       ${SOURCE_DIR}/src/mongoc/mongoc-ssl.h)
    set (SOURCES ${SOURCES}
-      ${SOURCE_DIR}/src/mongoc/mongoc-rand.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-crypto.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-crypto-openssl.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-rand-openssl.c
       ${SOURCE_DIR}/src/mongoc/mongoc-scram.c
       ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-bio.c
       ${SOURCE_DIR}/src/mongoc/mongoc-ssl.c
+      ${SOURCE_DIR}/src/mongoc/mongoc-openssl.c
    )
    set(LIBS ${LIBS} ${OPENSSL_LIBRARIES})
    include_directories(${OPENSSL_INCLUDE_DIR})
@@ -293,6 +313,7 @@ set(test-libmongoc-sources
    ${SOURCE_DIR}/tests/test-mongoc-cluster.c
    ${SOURCE_DIR}/tests/test-mongoc-collection.c
    ${SOURCE_DIR}/tests/test-mongoc-collection-find.c
+   ${SOURCE_DIR}/tests/test-mongoc-command-monitoring.c
    ${SOURCE_DIR}/tests/test-mongoc-cursor.c
    ${SOURCE_DIR}/tests/test-mongoc-database.c
    ${SOURCE_DIR}/tests/test-mongoc-exhaust.c
@@ -380,3 +401,30 @@ install(
   FILES ${HEADERS}
   DESTINATION "include/libmongoc-${MONGOC_API_VERSION}"
 )
+
+# Define pkg-config files
+set(VERSION "${MONGOC_VERSION}")
+set(prefix "${CMAKE_INSTALL_PREFIX}")
+set(libdir "\${prefix}/lib")
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/libmongoc-1.0.pc.in
+  ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-1.0.pc
+@ONLY)
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/libmongoc-priv.pc.in
+  ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-priv.pc
+@ONLY)
+install(
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-1.0.pc ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-priv.pc
+  DESTINATION lib/pkgconfig
+)
+if (MONGOC_ENABLE_SSL)
+  configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/libmongoc-ssl-1.0.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-ssl-1.0.pc
+  @ONLY)
+  install(
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-ssl-1.0.pc
+    DESTINATION lib/pkgconfig
+  )
+endif()

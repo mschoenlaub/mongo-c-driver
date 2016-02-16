@@ -22,6 +22,7 @@
 #include "mongoc-trace.h"
 #include "mongoc-error.h"
 #include "mongoc-util-private.h"
+#include "mongoc-client-private.h"
 
 
 #undef MONGOC_LOG_DOMAIN
@@ -36,6 +37,9 @@ _mongoc_cursor_cursorid_new (void)
    ENTRY;
 
    cid = (mongoc_cursor_cursorid_t *)bson_malloc0 (sizeof *cid);
+   cid->in_batch = false;
+   cid->in_reader = false;
+   bson_init (&cid->array);
 
    RETURN (cid);
 }
@@ -44,9 +48,15 @@ _mongoc_cursor_cursorid_new (void)
 static void
 _mongoc_cursor_cursorid_destroy (mongoc_cursor_t *cursor)
 {
+   mongoc_cursor_cursorid_t *cid;
+
    ENTRY;
 
-   bson_free (cursor->iface_data);
+   cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
+   BSON_ASSERT (cid);
+
+   bson_destroy (&cid->array);
+   bson_free (cid);
    _mongoc_cursor_destroy (cursor);
 
    EXIT;
@@ -58,7 +68,6 @@ _mongoc_cursor_cursorid_refresh_from_command (mongoc_cursor_t *cursor,
                                               const bson_t    *command)
 {
    mongoc_cursor_cursorid_t *cid;
-   const bson_t *bson;
    bson_iter_t iter, child;
    const char *ns;
 
@@ -67,11 +76,13 @@ _mongoc_cursor_cursorid_refresh_from_command (mongoc_cursor_t *cursor,
    cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
    BSON_ASSERT (cid);
 
+   /* run_command will initialize cid->array */
+   bson_destroy (&cid->array);
+
    /* server replies to find / aggregate with {cursor: {id: N, firstBatch: []}},
     * to getMore command with {cursor: {id: N, nextBatch: []}}. */
-   if (_mongoc_cursor_run_command (cursor, command) &&
-       _mongoc_read_from_buffer (cursor, &bson) &&
-       bson_iter_init_find (&iter, bson, "cursor") &&
+   if (_mongoc_cursor_run_command (cursor, command, &cid->array) &&
+       bson_iter_init_find (&iter, &cid->array, "cursor") &&
        BSON_ITER_HOLDS_DOCUMENT (&iter) &&
        bson_iter_recurse (&iter, &child)) {
 
@@ -133,20 +144,19 @@ bool
 _mongoc_cursor_cursorid_prime (mongoc_cursor_t *cursor)
 {
    cursor->sent = true;
+   cursor->operation_id = ++cursor->client->cluster.operation_id;
    return _mongoc_cursor_cursorid_refresh_from_command (cursor, &cursor->query);
 }
 
 
-static void
+bool
 _mongoc_cursor_prepare_getmore_command (mongoc_cursor_t *cursor,
                                         bson_t          *command)
 {
    const char *collection;
    int collection_len;
-   mongoc_cursor_cursorid_t *cid;
 
-   cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
-   BSON_ASSERT (cid);
+   ENTRY;
 
    _mongoc_cursor_collection (cursor, &collection, &collection_len);
 
@@ -155,7 +165,7 @@ _mongoc_cursor_prepare_getmore_command (mongoc_cursor_t *cursor,
    bson_append_utf8 (command, "collection", 10, collection, collection_len);
 
    if (cursor->batch_size) {
-      bson_append_int32 (command, "batchSize", 9, cursor->batch_size);
+      bson_append_int64 (command, "batchSize", 9, cursor->batch_size);
    }
 
    /* Find, getMore And killCursors Commands Spec: "In the case of a tailable
@@ -170,6 +180,8 @@ _mongoc_cursor_prepare_getmore_command (mongoc_cursor_t *cursor,
        cursor->max_await_time_ms) {
       bson_append_int32 (command, "maxTimeMS", 9, cursor->max_await_time_ms);
    }
+
+   RETURN (true);
 }
 
 
@@ -193,7 +205,11 @@ _mongoc_cursor_cursorid_get_more (mongoc_cursor_t *cursor)
    }
 
    if (_use_find_command (cursor, server_stream)) {
-      _mongoc_cursor_prepare_getmore_command (cursor, &command);
+      if (!_mongoc_cursor_prepare_getmore_command (cursor, &command)) {
+         mongoc_server_stream_cleanup (server_stream);
+         RETURN (false);
+      }
+
       ret = _mongoc_cursor_cursorid_refresh_from_command (cursor, &command);
       bson_destroy (&command);
    } else {
@@ -228,6 +244,11 @@ _mongoc_cursor_cursorid_next (mongoc_cursor_t *cursor,
 
 again:
 
+   /* Two paths:
+    * - Mongo 3.2+, sent "getMore" cmd, we're reading reply's "nextBatch" array
+    * - Mongo 2.6 to 3, after "aggregate" or similar command we sent OP_GETMORE,
+    *   we're reading the raw reply
+    */
    if (cid->in_batch) {
       _mongoc_cursor_cursorid_read_from_batch (cursor, bson);
 

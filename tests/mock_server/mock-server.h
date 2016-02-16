@@ -21,7 +21,7 @@
 
 #include "mongoc-uri.h"
 
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
 
 #include "mongoc-ssl.h"
 
@@ -54,7 +54,7 @@ int mock_server_auto_ismaster (mock_server_t *server,
                                const char *response_json,
                                ...);
 
-#ifdef MONGOC_ENABLE_SSL
+#ifdef MONGOC_ENABLE_OPENSSL
 
 void mock_server_set_ssl_opts (mock_server_t *server,
                                mongoc_ssl_opt_t *opts);
@@ -147,6 +147,8 @@ void mock_server_replies (request_t *request,
 
 void mock_server_replies_simple (request_t *request,
                                  const char *docs_json);
+
+void mock_server_replies_ok_and_destroys (request_t *request);
 
 void mock_server_replies_to_find (request_t           *request,
                                   mongoc_query_flags_t flags,
