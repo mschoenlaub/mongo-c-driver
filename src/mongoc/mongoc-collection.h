@@ -43,6 +43,13 @@ mongoc_cursor_t               *mongoc_collection_aggregate           (mongoc_col
                                                                       const bson_t                  *pipeline,
                                                                       const bson_t                  *options,
                                                                       const mongoc_read_prefs_t     *read_prefs) BSON_GNUC_WARN_UNUSED_RESULT;
+mongoc_cursor_t               *mongoc_collection_aggregate_with_write_concern
+                                                                     (mongoc_collection_t           *collection,
+                                                                      mongoc_query_flags_t           flags,
+                                                                      const bson_t                  *pipeline,
+                                                                      const bson_t                  *options,
+                                                                      const mongoc_read_prefs_t     *read_prefs,
+                                                                      mongoc_write_concern_t        *write_concern) BSON_GNUC_WARN_UNUSED_RESULT;
 void                          mongoc_collection_destroy              (mongoc_collection_t           *collection);
 mongoc_collection_t          *mongoc_collection_copy                 (mongoc_collection_t           *collection);
 mongoc_cursor_t              *mongoc_collection_command              (mongoc_collection_t           *collection,
@@ -75,12 +82,21 @@ int64_t                       mongoc_collection_count_with_opts      (mongoc_col
                                                                       bson_error_t                  *error);
 bool                          mongoc_collection_drop                 (mongoc_collection_t           *collection,
                                                                       bson_error_t                  *error);
+bool                          mongoc_collection_drop_with_write_concern
+                                                                     (mongoc_collection_t           *collection,
+                                                                      mongoc_write_concern_t        *write_concern,
+                                                                      bson_error_t                  *error);
 bool                          mongoc_collection_drop_index           (mongoc_collection_t           *collection,
                                                                       const char                    *index_name,
                                                                       bson_error_t                  *error);
 bool                          mongoc_collection_create_index         (mongoc_collection_t           *collection,
                                                                       const bson_t                  *keys,
                                                                       const mongoc_index_opt_t      *opt,
+                                                                      bson_error_t                  *error);
+bool                          mongoc_collection_create_index_2       (mongoc_collection_t           *collection,
+                                                                      const bson_t                  *keys,
+                                                                      const mongoc_index_opt_t      *opt,
+                                                                      bson_t                        *reply,
                                                                       bson_error_t                  *error);
 bool                          mongoc_collection_ensure_index         (mongoc_collection_t           *collection,
                                                                       const bson_t                  *keys,

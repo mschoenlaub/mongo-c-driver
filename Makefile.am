@@ -50,6 +50,8 @@ EXTRA_DIST += \
 	VERSION_CURRENT \
 	VERSION_RELEASED
 
+EXTRA_DIST += $(wildcard orchestration_configs/*/*)
+
 dist-hook:
 	@if test -d "$(srcdir)/.git"; then                              \
           (cd "$(srcdir)" &&                                            \
@@ -63,7 +65,3 @@ dist-hook:
 
 uninstall-local:
 	-rm -r $(mongocdocdir)
-
-dist-rpm: dist-gzip
-	cp mongo-c-driver-$(MONGOC_VERSION).tar.gz ~/rpmbuild/SOURCES/
-	rpmbuild -bb build/rpm/mongo-c-driver.spec

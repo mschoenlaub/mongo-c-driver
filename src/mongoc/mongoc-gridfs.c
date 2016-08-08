@@ -71,9 +71,10 @@ _mongoc_gridfs_ensure_index (mongoc_gridfs_t *gridfs,
    bson_init (&keys);
 
    bson_append_int32 (&keys, "filename", -1, 1);
+   bson_append_int32 (&keys, "uploadDate", -1, 1);
    opt.unique = 0;
 
-   r = mongoc_collection_create_index (gridfs->chunks, &keys, &opt, error);
+   r = mongoc_collection_create_index (gridfs->files, &keys, &opt, error);
 
    bson_destroy (&keys);
 
@@ -90,8 +91,12 @@ _mongoc_gridfs_new (mongoc_client_t *client,
                     bson_error_t    *error)
 {
    mongoc_gridfs_t *gridfs;
+   const mongoc_read_prefs_t *read_prefs;
+   const mongoc_read_concern_t *read_concern;
+   const mongoc_write_concern_t *write_concern;
    char buf[128];
    bool r;
+   uint32_t prefix_len;
 
    ENTRY;
 
@@ -105,23 +110,24 @@ _mongoc_gridfs_new (mongoc_client_t *client,
    /* make sure prefix is short enough to bucket the chunks and files
     * collections
     */
-#ifndef BSON_DISABLE_ASSERT
-   {
-      uint32_t prefix_len;
-      prefix_len = (uint32_t)strlen (prefix);
-      BSON_ASSERT (prefix_len + sizeof (".chunks") < sizeof (buf));
-   }
-#endif
+   prefix_len = (uint32_t)strlen (prefix);
+   BSON_ASSERT (prefix_len + sizeof (".chunks") < sizeof (buf));
 
    gridfs = (mongoc_gridfs_t *) bson_malloc0 (sizeof *gridfs);
 
    gridfs->client = client;
 
+   read_prefs = mongoc_client_get_read_prefs (client);
+   read_concern = mongoc_client_get_read_concern (client);
+   write_concern = mongoc_client_get_write_concern (client);
+
    bson_snprintf (buf, sizeof(buf), "%s.chunks", prefix);
-   gridfs->chunks = _mongoc_collection_new (client, db, buf, NULL, NULL, NULL);
+   gridfs->chunks = _mongoc_collection_new (client, db, buf, read_prefs,
+                                            read_concern, write_concern);
 
    bson_snprintf (buf, sizeof(buf), "%s.files", prefix);
-   gridfs->files = _mongoc_collection_new (client, db, buf, NULL, NULL, NULL);
+   gridfs->files = _mongoc_collection_new (client, db, buf, read_prefs,
+                                           read_concern, write_concern);
 
    r = _mongoc_gridfs_ensure_index (gridfs, error);
 

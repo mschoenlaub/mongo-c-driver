@@ -29,6 +29,7 @@
 #include "mongoc-log.h"
 #include "mongoc-trace.h"
 #include "mongoc-util-private.h"
+#include "mongoc-write-concern-private.h"
 
 
 #undef MONGOC_LOG_DOMAIN
@@ -172,10 +173,12 @@ mongoc_database_command (mongoc_database_t         *database,
    BSON_ASSERT (database);
    BSON_ASSERT (command);
 
-   if (!read_prefs) {
-      read_prefs = database->read_prefs;
-   }
-
+   /* Server Selection Spec: "The generic command method has a default read
+    * preference of mode 'primary'. The generic command method MUST ignore any
+    * default read preference from client, database or collection
+    * configuration. The generic command method SHOULD allow an optional read
+    * preference argument."
+    */
    return mongoc_client_command (database->client, database->name, flags, skip,
                                  limit, batch_size, command, fields, read_prefs);
 }
@@ -191,10 +194,12 @@ mongoc_database_command_simple (mongoc_database_t         *database,
    BSON_ASSERT (database);
    BSON_ASSERT (command);
 
-   if (!read_prefs) {
-      read_prefs = database->read_prefs;
-   }
-
+   /* Server Selection Spec: "The generic command method has a default read
+    * preference of mode 'primary'. The generic command method MUST ignore any
+    * default read preference from client, database or collection
+    * configuration. The generic command method SHOULD allow an optional read
+    * preference argument."
+    */
    return mongoc_client_command_simple (database->client, database->name,
                                         command, read_prefs, reply, error);
 }
@@ -222,13 +227,34 @@ bool
 mongoc_database_drop (mongoc_database_t *database,
                       bson_error_t      *error)
 {
+   return mongoc_database_drop_with_write_concern (
+      database, NULL, error);
+}
+
+
+bool
+mongoc_database_drop_with_write_concern (mongoc_database_t      *database,
+                                         mongoc_write_concern_t *write_concern,
+                                         bson_error_t           *error)
+{
    bool ret;
    bson_t cmd;
 
    BSON_ASSERT (database);
 
+   if (!_mongoc_write_concern_validate (write_concern, error)) {
+      return false;
+   }
+
    bson_init(&cmd);
    bson_append_int32(&cmd, "dropDatabase", 12, 1);
+
+   if (write_concern &&
+       !_mongoc_write_concern_is_default (write_concern)) {
+      bson_append_document (&cmd, "writeConcern", 12,
+                            _mongoc_write_concern_get_bson (write_concern));
+   }
+
    ret = mongoc_database_command_simple(database, &cmd, NULL, NULL, error);
    bson_destroy(&cmd);
 
@@ -962,6 +988,19 @@ mongoc_database_create_collection (mongoc_database_t *database,
                                    const bson_t      *options,
                                    bson_error_t      *error)
 {
+   return mongoc_database_create_collection_with_write_concern (
+      database, name, options, NULL, error);
+}
+
+
+mongoc_collection_t *
+mongoc_database_create_collection_with_write_concern (
+        mongoc_database_t      *database,
+        const char             *name,
+        const bson_t           *options,
+        mongoc_write_concern_t *write_concern,
+        bson_error_t           *error)
+{
    mongoc_collection_t *collection = NULL;
    bson_iter_t iter;
    bson_t cmd;
@@ -1101,6 +1140,15 @@ mongoc_database_create_collection (mongoc_database_t *database,
       }
    }
 
+   if (write_concern &&
+       !mongoc_write_concern_append (write_concern, &cmd)) {
+      bson_set_error (error,
+                      MONGOC_ERROR_COMMAND,
+                      MONGOC_ERROR_COMMAND_INVALID_ARG,
+                      "Invalid mongoc_write_concern_t");
+      return NULL;
+   }
+
    if (mongoc_database_command_simple (database, &cmd, NULL, NULL, error)) {
       collection = _mongoc_collection_new (database->client,
                                            database->name,
@@ -1123,8 +1171,9 @@ mongoc_database_get_collection (mongoc_database_t *database,
    BSON_ASSERT (database);
    BSON_ASSERT (collection);
 
-   return mongoc_client_get_collection (database->client, database->name,
-                                        collection);
+   return _mongoc_collection_new (database->client, database->name, collection,
+                                  database->read_prefs, database->read_concern,
+                                  database->write_concern);
 }
 
 

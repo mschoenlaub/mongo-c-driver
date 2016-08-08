@@ -239,7 +239,7 @@ main (int argc,
       }
    }
 
-   uri = bson_strdup_printf ("mongodb://%s:%hu/%s?ssl=%s",
+   uri = bson_strdup_printf ("mongodb://%s:%hu/%s?appname=dump-example&ssl=%s",
                              host,
                              port,
                              database ? database : "",
@@ -249,6 +249,8 @@ main (int argc,
       fprintf (stderr, "Invalid connection URI: %s\n", uri);
       return EXIT_FAILURE;
    }
+
+   mongoc_client_set_error_api (client, 2);
 
    ret = mongoc_dump (client, database, collection);
 
