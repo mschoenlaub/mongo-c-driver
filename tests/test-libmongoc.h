@@ -23,6 +23,8 @@ char *gen_collection_name (const char *prefix);
 void suppress_one_message (void);
 char *test_framework_getenv (const char *name);
 bool test_framework_getenv_bool (const char *name);
+int64_t test_framework_getenv_int64 (const char *name,
+                                     int64_t default_value);
 char *test_framework_get_host (void);
 uint16_t test_framework_get_port (void);
 char *test_framework_get_admin_user (void);
@@ -37,4 +39,17 @@ mongoc_uri_t *test_framework_get_uri (void);
 mongoc_client_t *test_framework_client_new (void);
 mongoc_client_pool_t *test_framework_client_pool_new (void);
 bool test_framework_is_mongos (void);
+bool test_framework_is_replset (void);
+int test_framework_skip_if_mongos (void);
+int test_framework_skip_if_replset (void);
+bool test_framework_max_wire_version_at_least (int version);
+
+typedef struct _debug_stream_stats_t {
+    int n_destroyed;
+    int n_failed;
+} debug_stream_stats_t;
+
+void test_framework_set_debug_stream (mongoc_client_t *client,
+                                      debug_stream_stats_t *stats);
+
 #endif

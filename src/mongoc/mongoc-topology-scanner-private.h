@@ -54,6 +54,9 @@ typedef struct mongoc_topology_scanner_node
 
    struct mongoc_topology_scanner_node *next;
    struct mongoc_topology_scanner_node *prev;
+
+   bool                            retired;
+   bson_error_t                    last_error;
 } mongoc_topology_scanner_node_t;
 
 typedef struct mongoc_topology_scanner
@@ -69,7 +72,6 @@ typedef struct mongoc_topology_scanner
    mongoc_async_cmd_setup_t        setup;
    mongoc_stream_initiator_t       initiator;
    void                           *initiator_context;
-   mongoc_host_list_t             *seen;
 
 #ifdef MONGOC_ENABLE_SSL
    mongoc_ssl_opt_t *ssl_opts;
@@ -84,7 +86,7 @@ mongoc_topology_scanner_new (const mongoc_uri_t          *uri,
 void
 mongoc_topology_scanner_destroy (mongoc_topology_scanner_t *ts);
 
-void
+mongoc_topology_scanner_node_t *
 mongoc_topology_scanner_add (mongoc_topology_scanner_t *ts,
                              const mongoc_host_list_t  *host,
                              uint32_t                   id);
@@ -94,6 +96,13 @@ mongoc_topology_scanner_add_and_scan (mongoc_topology_scanner_t *ts,
                                       const mongoc_host_list_t  *host,
                                       uint32_t                   id,
                                       int64_t                    timeout_msec);
+
+void
+mongoc_topology_scanner_node_retire (mongoc_topology_scanner_node_t *node);
+
+void
+mongoc_topology_scanner_node_disconnect (mongoc_topology_scanner_node_t *node,
+                                         bool failed);
 
 void
 mongoc_topology_scanner_node_destroy (mongoc_topology_scanner_node_t *node,
@@ -108,18 +117,29 @@ bool
 mongoc_topology_scanner_work (mongoc_topology_scanner_t *ts,
                               int32_t                    timeout_msec);
 
+void
+mongoc_topology_scanner_sum_errors (mongoc_topology_scanner_t *ts,
+                                    bson_error_t              *error);
+
+void
+mongoc_topology_scanner_reset (mongoc_topology_scanner_t *ts);
+
+bool
+mongoc_topology_scanner_node_setup (mongoc_topology_scanner_node_t *node,
+                                    bson_error_t *error);
+
 mongoc_topology_scanner_node_t *
 mongoc_topology_scanner_get_node (mongoc_topology_scanner_t *ts,
                                   uint32_t                   id);
+
+bool
+mongoc_topology_scanner_has_node_for_host (mongoc_topology_scanner_t *ts,
+                                           mongoc_host_list_t        *host);
 
 void
 mongoc_topology_scanner_set_stream_initiator (mongoc_topology_scanner_t *ts,
                                               mongoc_stream_initiator_t  si,
                                               void                      *ctx);
-
-void
-mongoc_topology_scanner_set_async_cb (mongoc_topology_scanner_t *ts,
-                                      mongoc_async_cmd_setup_t   cb);
 
 #ifdef MONGOC_ENABLE_SSL
 void

@@ -34,11 +34,7 @@
 #include "mongoc-ssl-private.h"
 #include "mongoc-trace.h"
 #include "mongoc-thread-private.h"
-
-#ifdef _WIN32
-# define strncasecmp _strnicmp
-# define strcasecmp  _stricmp
-#endif
+#include "mongoc-util-private.h"
 
 /* TODO: we could populate these from a config or something further down the
  * road for providing defaults */
@@ -272,7 +268,7 @@ _mongoc_ssl_check_cert (SSL        *ssl,
 
                   break;
                default:
-                  assert (0);
+                  BSON_ASSERT (0);
                   break;
                }
             }

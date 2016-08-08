@@ -3,6 +3,7 @@
 #include "mongoc-array-private.h"
 #include "mongoc-thread-private.h"
 #include "future.h"
+#include "../test-libmongoc.h"
 
 /**************************************************
  *
@@ -12,7 +13,14 @@
  *
  *************************************************/
 
-#define FUTURE_TIMEOUT_MS 10 * 1000
+#define DEFAULT_FUTURE_TIMEOUT_MS 10 * 1000
+
+static int64_t
+get_future_timeout_ms ()
+{
+    return test_framework_getenv_int64 ("MONGOC_TEST_FUTURE_TIMEOUT_MS",
+                                        DEFAULT_FUTURE_TIMEOUT_MS);
+}
 
 void
 future_get_void (future_t *future)
@@ -288,21 +296,6 @@ future_get_param (future_t *future, int i)
    return &future->argv[i];
 }
 
-future_t *
-future_new_copy (future_t *future)
-{
-   future_t *copy;
-
-   mongoc_mutex_lock (&future->mutex);
-   copy = future_new (future->return_value.type, future->argc);
-   copy->return_value = future->return_value;
-   memcpy (copy->argv, future->argv, future->argc * sizeof(future_value_t));
-   mongoc_mutex_unlock (&future->mutex);
-
-   return copy;
-}
-
-
 void
 future_start (future_t *future,
               void *(*start_routine)(void *))
@@ -331,18 +324,21 @@ future_resolve (future_t *future, future_value_t return_value)
 bool
 future_wait (future_t *future)
 {
-   /* TODO: configurable timeout */
-   int64_t deadline = bson_get_monotonic_time () + FUTURE_TIMEOUT_MS * 1000;
+   int64_t deadline = bson_get_monotonic_time () + get_future_timeout_ms ();
    bool resolved;
 
    mongoc_mutex_lock (&future->mutex);
    while (!future->resolved && bson_get_monotonic_time () <= deadline) {
-      mongoc_cond_timedwait (&future->cond, &future->mutex, FUTURE_TIMEOUT_MS);
+      mongoc_cond_timedwait (&future->cond,
+                             &future->mutex,
+                             get_future_timeout_ms ());
    }
    resolved = future->resolved;
    mongoc_mutex_unlock (&future->mutex);
 
    if (resolved) {
+      future->awaited = true;
+
       /* free memory */
       mongoc_thread_join (future->thread);
    }
@@ -354,6 +350,7 @@ future_wait (future_t *future)
 void
 future_destroy (future_t *future)
 {
+   assert (future->awaited);
    bson_free (future->argv);
    mongoc_cond_destroy (&future->cond);
    mongoc_mutex_destroy (&future->mutex);

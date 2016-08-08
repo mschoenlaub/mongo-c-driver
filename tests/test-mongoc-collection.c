@@ -1,6 +1,7 @@
 #include <bcon.h>
 #include <mongoc.h>
 #include <mongoc-client-private.h>
+#include <mongoc-cursor-private.h>
 
 #include "TestSuite.h"
 
@@ -205,6 +206,36 @@ test_insert_bulk (void)
 
 
 static void
+test_insert_bulk_empty (void)
+{
+   mongoc_collection_t *collection;
+   mongoc_database_t *database;
+   mongoc_client_t *client;
+   bson_error_t error;
+   bson_t *bptr = NULL;
+
+   client = test_framework_client_new ();
+   database = get_test_database (client);
+   collection = get_test_collection (client, "test_insert_bulk_empty");
+
+   BEGIN_IGNORE_DEPRECATIONS;
+   ASSERT (!mongoc_collection_insert_bulk (collection,
+                                           MONGOC_INSERT_NONE,
+                                           (const bson_t **)&bptr,
+                                           0, NULL, &error));
+   END_IGNORE_DEPRECATIONS;
+
+   ASSERT_CMPINT (MONGOC_ERROR_COLLECTION, ==, error.domain);
+   ASSERT_CMPINT (MONGOC_ERROR_COLLECTION_INSERT_FAILED, ==, error.code);
+   ASSERT_CONTAINS (error.message, "empty insert");
+
+   mongoc_collection_destroy(collection);
+   mongoc_database_destroy(database);
+   mongoc_client_destroy(client);
+}
+
+
+static void
 auto_ismaster (mock_server_t *server,
                int32_t max_message_size,
                int32_t max_bson_size,
@@ -345,6 +376,78 @@ test_legacy_bulk_insert_large (void)
 
    future_destroy (future);
    destroy_all (bsons, N_BSONS);
+   mongoc_collection_destroy(collection);
+   mongoc_client_destroy(client);
+   mock_server_destroy (server);
+}
+
+
+/* verify an insert command's "documents" array has keys "0", "1", "2", ... */
+static void
+verify_keys (uint32_t n_documents,
+             const bson_t *insert_command)
+{
+   bson_iter_t iter;
+   uint32_t len;
+   const uint8_t *data;
+   bson_t document;
+   char str[16];
+   const char *key;
+   uint32_t i;
+
+   ASSERT (bson_iter_init_find (&iter, insert_command, "documents"));
+   bson_iter_array (&iter, &len, &data);
+   ASSERT (bson_init_static (&document, data, len));
+
+   for (i = 0; i < n_documents; i++) {
+      bson_uint32_to_string (i, &key, str, sizeof str);
+      ASSERT (bson_has_field (&document, key));
+   }
+}
+
+
+/* CDRIVER-845: "insert" command must have array keys "0", "1", "2", ... */
+static void
+test_insert_command_keys (void)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   mongoc_bulk_operation_t *bulk;
+   uint32_t i;
+   bson_t *doc;
+   bson_t reply;
+   bson_error_t error;
+   future_t *future;
+   request_t *request;
+
+   /* maxWireVersion 3 allows write commands */
+   server = mock_server_with_autoismaster (3);
+   mock_server_run (server);
+
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "test", "test");
+   bulk = mongoc_collection_create_bulk_operation (collection, true, NULL);
+
+   for (i = 0; i < 3; i++) {
+      doc = BCON_NEW ("_id", BCON_INT32 (i));
+      mongoc_bulk_operation_insert (bulk, doc);
+      bson_destroy (doc);
+   }
+
+   future = future_bulk_operation_execute (bulk, &reply, &error);
+   request = mock_server_receives_command (server, "test", MONGOC_QUERY_NONE,
+                                           "{'insert': 'test'}");
+
+   verify_keys (3, request_get_doc (request, 0));
+   mock_server_replies_simple (request, "{'ok': 1}");
+
+   ASSERT_OR_PRINT (future_get_uint32_t (future), error);
+
+   bson_destroy (&reply);
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_bulk_operation_destroy (bulk);
    mongoc_collection_destroy(collection);
    mongoc_client_destroy(client);
    mock_server_destroy (server);
@@ -1196,9 +1299,10 @@ test_aggregate (void)
    bool r;
    bson_t opts;
    bson_t *pipeline;
+   bson_t *broken_pipeline;
    bson_t *b;
    bson_iter_t iter;
-   int i;
+   int i, j;
 
    client = test_framework_client_new ();
    ASSERT (client);
@@ -1210,6 +1314,7 @@ test_aggregate (void)
    ASSERT (collection);
 
    pipeline = BCON_NEW ("pipeline", "[", "{", "$match", "{", "hello", BCON_UTF8 ("world"), "}", "}", "]");
+   broken_pipeline = BCON_NEW ("pipeline", "[", "{", "$asdf", "{", "foo", BCON_UTF8 ("bar"), "}", "}", "]");
    b = BCON_NEW ("hello", BCON_UTF8 ("world"));
 
 again:
@@ -1221,35 +1326,42 @@ again:
          MONGOC_INSERT_NONE, b, NULL, &error), error);
    }
 
+   cursor = mongoc_collection_aggregate (collection, MONGOC_QUERY_NONE, broken_pipeline, NULL, NULL);
+   ASSERT (cursor);
+
+   r = mongoc_cursor_next (cursor, &doc);
+   ASSERT (!r);
+   ASSERT (mongoc_cursor_error (cursor, &error));
+   ASSERT (cursor->failed);
+   ASSERT (error.code == 16436);
+
    for (i = 0; i < 2; i++) {
       if (i % 2 == 0) {
          cursor = mongoc_collection_aggregate(collection, MONGOC_QUERY_NONE, pipeline, NULL, NULL);
          ASSERT (cursor);
       } else {
          bson_init (&opts);
-         BSON_APPEND_INT32 (&opts, "batchSize", 10);
-         BSON_APPEND_BOOL (&opts, "allowDiskUse", true);
 
+         /* servers < 2.6 error is passed allowDiskUse */
+         if (test_framework_max_wire_version_at_least (2)) {
+            BSON_APPEND_BOOL (&opts, "allowDiskUse", true);
+         }
+
+         /* this is ok, the driver silently omits batchSize if server < 2.6 */
+         BSON_APPEND_INT32 (&opts, "batchSize", 10);
          cursor = mongoc_collection_aggregate(collection, MONGOC_QUERY_NONE, pipeline, &opts, NULL);
          ASSERT (cursor);
 
          bson_destroy (&opts);
       }
 
-      for (i = 0; i < 2; i++) {
-         /*
-          * This can fail if we are connecting to a 2.0 MongoDB instance.
-          */
+      for (j = 0; j < 2; j++) {
          r = mongoc_cursor_next(cursor, &doc);
          if (mongoc_cursor_error(cursor, &error)) {
-            if ((error.domain == MONGOC_ERROR_QUERY) &&
-                (error.code == MONGOC_ERROR_QUERY_COMMAND_NOT_FOUND)) {
-               mongoc_cursor_destroy (cursor);
-               break;
-            }
-
             fprintf (stderr, "[%d.%d] %s",
                      error.domain, error.code, error.message);
+
+            abort ();
          }
 
          ASSERT (r);
@@ -1262,7 +1374,9 @@ again:
       r = mongoc_cursor_next(cursor, &doc);
       if (mongoc_cursor_error(cursor, &error)) {
          fprintf (stderr, "%s", error.message);
+         abort ();
       }
+
       ASSERT (!r);
       ASSERT (!doc);
 
@@ -1283,6 +1397,137 @@ again:
    mongoc_client_destroy(client);
    bson_destroy(b);
    bson_destroy(pipeline);
+   bson_destroy (broken_pipeline);
+}
+
+
+typedef struct {
+    bool with_batch_size;
+    bool with_options;
+} test_aggregate_context_t;
+
+
+static const char *
+options_json (test_aggregate_context_t *c)
+{
+   if (c->with_batch_size && c->with_options) {
+      return "{'foo': 1, 'batchSize': 11}";
+   } else if (c->with_batch_size) {
+      return "{'batchSize': 11}";
+   } else if (c->with_options) {
+      return "{'foo': 1}";
+   } else {
+      return "{}";
+   }
+}
+
+
+static void
+test_aggregate_legacy (void *data)
+{
+   test_aggregate_context_t *context = (test_aggregate_context_t *) data;
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   future_t *future;
+   request_t *request;
+   mongoc_cursor_t *cursor;
+   const bson_t *doc;
+
+   /* wire protocol version 0 */
+   server = mock_server_with_autoismaster (0);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "db", "collection");
+
+   cursor = mongoc_collection_aggregate (
+      collection,
+      MONGOC_QUERY_NONE,
+      tmp_bson ("[{'a': 1}]"),
+      tmp_bson (options_json (context)),
+      NULL);
+
+   future = future_cursor_next (cursor, &doc);
+
+   /* no "cursor" argument */
+   request = mock_server_receives_command (
+      server, "db", MONGOC_QUERY_NONE,
+      "{'aggregate': 'collection',"
+      " 'pipeline': [{'a': 1}]},"
+      " 'cursor': {'$exists': false} %s",
+      context->with_options ? ", 'foo': 1" : "");
+
+   mock_server_replies_simple (request, "{'ok': 1, 'result': [{'_id': 123}]}");
+   assert (future_get_bool (future));
+   ASSERT_MATCH (doc, "{'_id': 123}");
+
+   /* cursor is completed */
+   assert (!mongoc_cursor_next (cursor, &doc));
+
+   mongoc_cursor_destroy (cursor);
+   request_destroy (request);
+   future_destroy (future);
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
+}
+
+
+static void
+test_aggregate_modern (void *data)
+{
+   test_aggregate_context_t *context = (test_aggregate_context_t *) data;
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_collection_t *collection;
+   future_t *future;
+   request_t *request;
+   mongoc_cursor_t *cursor;
+   const bson_t *doc;
+
+   /* wire protocol version 1 */
+   server = mock_server_with_autoismaster (1);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   collection = mongoc_client_get_collection (client, "db", "collection");
+
+   future = future_collection_aggregate (
+      collection,
+      MONGOC_QUERY_NONE,
+      tmp_bson ("[{'a': 1}]"),
+      tmp_bson (options_json (context)),
+      NULL);
+
+   /* "cursor" argument always sent if wire version >= 1 */
+   request = mock_server_receives_command (
+      server, "db", MONGOC_QUERY_NONE,
+      "{'aggregate': 'collection',"
+      " 'pipeline': [{'a': 1}],"
+      " 'cursor': %s %s}",
+      context->with_batch_size ? "{'batchSize': 11}" : "{'$empty': true}",
+      context->with_options ? ", 'foo': 1" : "");
+
+   mock_server_replies_simple (request,
+                               "{'ok': 1,"
+                               " 'cursor': {"
+                               "    'id': 0,"
+                               "    'ns': 'db.collection',"
+                               "    'firstBatch': [{'_id': 123}]"
+                               "}}");
+
+   assert ((cursor = future_get_mongoc_cursor_ptr (future)));
+   assert (mongoc_cursor_next (cursor, &doc));
+   ASSERT_MATCH (doc, "{'_id': 123}");
+
+   /* cursor is completed */
+   assert (!mongoc_cursor_next (cursor, &doc));
+
+   mongoc_cursor_destroy (cursor);
+   request_destroy (request);
+   future_destroy (future);
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
 }
 
 
@@ -1582,35 +1827,38 @@ END_IGNORE_DEPRECATIONS;
 
 
 static void
-test_command_fq (void)
+test_command_fq (void *context)
 {
-   mongoc_collection_t *collection;
    mongoc_client_t *client;
    mongoc_cursor_t *cursor;
    const bson_t *doc = NULL;
+   bson_iter_t iter;
    bson_t *cmd;
    bool r;
 
    client = test_framework_client_new ();
    ASSERT (client);
 
-   collection = mongoc_client_get_collection (client,
-                                              "admin", "$cmd.sys.inprog");
-   ASSERT (collection);
+   cmd = tmp_bson ("{ 'dbstats': 1}");
 
-   cmd = BCON_NEW ("query", "{", "}");
-
-   cursor = mongoc_collection_command (collection, MONGOC_QUERY_NONE, 0, 1, 0,
-                                       cmd, NULL, NULL);
+   cursor = mongoc_client_command (client, "sometest.$cmd", MONGOC_QUERY_NONE,
+                                 0, -1, 0, cmd, NULL, NULL);
    r = mongoc_cursor_next (cursor, &doc);
    assert (r);
+
+   if (bson_iter_init_find (&iter, doc, "db") &&
+       BSON_ITER_HOLDS_UTF8 (&iter)) {
+      ASSERT_CMPSTR (bson_iter_utf8 (&iter, NULL), "sometest");
+   } else {
+      fprintf(stderr, "dbstats didn't return 'db' key?");
+      abort();
+   }
+
 
    r = mongoc_cursor_next (cursor, &doc);
    assert (!r);
 
    mongoc_cursor_destroy (cursor);
-   bson_destroy (cmd);
-   mongoc_collection_destroy (collection);
    mongoc_client_destroy (client);
 }
 
@@ -1747,11 +1995,52 @@ test_get_index_info (void)
    mongoc_client_destroy (client);
 }
 
+
+static void
+test_aggregate_install (TestSuite *suite) {
+   static test_aggregate_context_t test_aggregate_contexts[2][2][2];
+
+   int wire_version, with_batch_size, with_options;
+   char *legacy_or_modern;
+   TestFuncWC func;
+   char *name;
+   test_aggregate_context_t *context;
+
+   for (wire_version = 0; wire_version < 2; wire_version++) {
+      for (with_batch_size = 0; with_batch_size < 2; with_batch_size++) {
+         for (with_options = 0; with_options < 2; with_options++) {
+            legacy_or_modern = wire_version ? "legacy" : "modern";
+            func = wire_version ? test_aggregate_legacy : test_aggregate_modern;
+
+            context = &test_aggregate_contexts
+               [wire_version][with_batch_size][with_options];
+
+            context->with_batch_size = (bool) with_batch_size;
+            context->with_options = (bool) with_options;
+
+            name = bson_strdup_printf (
+               "/Collection/aggregate/%s/%s/%s",
+               legacy_or_modern,
+               context->with_batch_size ? "batch_size" : "no_batch_size",
+               context->with_options ? "with_options" : "no_options");
+
+            TestSuite_AddWC (suite, name, func, NULL, (void *) context);
+            bson_free (name);
+         }
+      }
+   }
+}
+
+
 void
 test_collection_install (TestSuite *suite)
 {
-   TestSuite_Add (suite, "/Collection/insert_bulk", test_insert_bulk);
+   test_aggregate_install (suite);
 
+   TestSuite_Add (suite, "/Collection/insert_bulk", test_insert_bulk);
+   TestSuite_Add (suite,
+                  "/Collection/insert_bulk_empty",
+                  test_insert_bulk_empty);
    TestSuite_Add (suite,
                   "/Collection/bulk_insert/legacy/large",
                   test_legacy_bulk_insert_large);
@@ -1775,6 +2064,7 @@ test_collection_install (TestSuite *suite)
                   test_legacy_bulk_insert_oversized_last_continue);
 
    TestSuite_Add (suite, "/Collection/insert", test_insert);
+   TestSuite_Add (suite, "/Collection/insert/keys", test_insert_command_keys);
    TestSuite_Add (suite, "/Collection/save", test_save);
    TestSuite_Add (suite, "/Collection/index", test_index);
    TestSuite_Add (suite, "/Collection/index_compound", test_index_compound);
@@ -1793,6 +2083,6 @@ test_collection_install (TestSuite *suite)
    TestSuite_Add (suite, "/Collection/find_and_modify", test_find_and_modify);
    TestSuite_Add (suite, "/Collection/large_return", test_large_return);
    TestSuite_Add (suite, "/Collection/many_return", test_many_return);
-   TestSuite_Add (suite, "/Collection/command_fully_qualified", test_command_fq);
+   TestSuite_AddFull (suite, "/Collection/command_fully_qualified", test_command_fq, NULL, NULL, test_framework_skip_if_mongos);
    TestSuite_Add (suite, "/Collection/get_index_info", test_get_index_info);
 }

@@ -1,3 +1,85 @@
+mongo-c-driver 1.2.0-rc0
+========================
+
+It is my pleasure to announce the release candidate of the MongoDB C driver
+1.2.0. It includes features and bugfixes developed since 1.2.0-beta1.
+
+Notable bugs fixed:
+
+  * Much improved reporting of network errors, unavailable servers, and
+    authentication failure
+  * Destroying an exhaust cursor must close its socket
+  * Various bugs in server reconnection logic
+  * mongoc_collection_aggregate returned invalid cursor after failure
+  * Wrong error message after failed network write on Sparc
+  * Missing JSON test files in release tarball
+
+Other changes:
+
+  * Enable runtime asserts in release build.
+  * mongoc_client_kill_cursor is now deprecated and will be removed in
+    version 2.0.
+
+This release candidate also includes all bugfixes from 1.1.11.
+
+Version 1.2.0 final will be a stable release with additive ABI changes and
+bugfixes. It is compatible with MongoDB version 2.4 and later.
+
+Thanks to everyone who contributed to this version of libmongoc.
+
+ * A. Jesse Jiryu Davis
+ * Hannes Magnusson
+ * Kyle Suarez
+ * rubicks
+ * Jose Sebastian Battig
+ * Jason Carey
+ * Remi Collet
+ * Yuval Hager
+
+Peace,
+
+  A. Jesse Jiryu Davis
+
+
+mongo-c-driver 1.2.0-beta1
+==========================
+
+It is my pleasure to announce the second beta release of the MongoDB C driver
+1.2.0. It includes features and bugfixes developed since 1.2.0-beta.
+
+New features:
+
+ * Set mongoc_client_pool_t's size with mongoc_client_pool_min_size()
+   and mongoc_client_pool_max_size().
+ * The write concern "w=-1" is now documented as obsolete.
+ * Abundant fixes and additions to the documentation, beyond those in the
+   previous beta.
+
+Notable bugs fixed:
+
+ * Crashes and races in several replica set scenarios.
+ * The driver now uses the server's maxWireVersion to avoid an error and
+   extra round-trip when executing aggregations on MongoDB 2.4 and older.
+ * Fixed network error handling in multiple code paths.
+ * connectTimeoutMS limits the time the driver can spend reconnecting to
+   servers in single-threaded (non-pooled) mode with serverSelectionTryOnce.
+
+Version 1.2.0 final will be a stable release with additive ABI changes and
+bugfixes. It is compatible with MongoDB version 2.4 and later.
+
+Thanks to everyone who contributed to this version of libmongoc.
+
+ * A. Jesse Jiryu Davis
+ * Hannes Magnusson
+ * Manuel Schoenlaub
+ * Kyle Suarez
+ * Remi Collet
+
+Peace,
+
+  A. Jesse Jiryu Davis
+
+
 mongo-c-driver 1.2.0-beta
 =========================
 
@@ -72,6 +154,55 @@ Peace,
 
   A. Jesse Jiryu Davis
 
+It is my pleasure to announce to you the MongoDB C driver 1.1.11.
+
+This is a patch release with bug fixes:
+
+ * Undetected network errors when sending messages to the server
+ * Off-by-one error in mongoc_gridfs_file_seek with mode SEEK_END
+ * Memory leak parsing a URI that contains an invalid option
+ * The libbson submodule's URL now uses the recommended https://, not git://
+
+Thanks to everyone who contributed to the development of this point release for
+libmongoc.
+
+ * A. Jesse Jiryu Davis
+ * Hannes Magnusson
+ * Jason Carey
+ * Jose Sebastian Battig
+ * rubicks
+
+Peace,
+
+  A. Jesse Jiryu Davis
+
+
+mongo-c-driver 1.1.11
+=====================
+
+It is my pleasure to announce to you the MongoDB C driver 1.1.11.
+
+This is a patch release with bug fixes:
+
+ * Undetected network errors when sending messages to the server
+ * Off-by-one error in mongoc_gridfs_file_seek with mode SEEK_END
+ * Memory leak parsing a URI that contains an invalid option
+ * The libbson submodule's URL now uses the recommended https://, not git://
+
+Thanks to everyone who contributed to the development of this point release for
+libmongoc.
+
+ * A. Jesse Jiryu Davis
+ * Hannes Magnusson
+ * Jason Carey
+ * Jose Sebastian Battig
+ * rubicks
+
+Peace,
+
+  A. Jesse Jiryu Davis
+
+
 mongo-c-driver 1.1.10
 =====================
 
@@ -95,6 +226,7 @@ Peace,
 
   A. Jesse Jiryu Davis
 
+
 mongo-c-driver 1.1.9
 ====================
 
@@ -112,6 +244,7 @@ libmongoc.
 Peace,
 
   A. Jesse Jiryu Davis
+
 
 mongo-c-driver 1.1.8
 ====================
@@ -343,7 +476,7 @@ Additions to the ABI include:
    - mongoc_client_find_databases
    - mongoc_collection_find_indexes
    - mongoc_database_find_collections
- * Kill cursor supportp
+ * Kill cursor support
    - mongoc_client_kill_cursor
  * Various get/setters on cursor
    - mongoc_cursor_get_batch_size
@@ -384,6 +517,7 @@ libmongoc.
 Enjoy!
 
 -- Jason Carey
+
 
 mongo-c-driver 1.1.0-rc0
 ========================
@@ -444,6 +578,7 @@ Enjoy!
 
 -- Jason Carey
 
+
 mongo-c-driver 1.0.2
 ====================
 
@@ -472,6 +607,7 @@ libmongoc.
  * Wisdom Omuya
 
 -- Jason Carey
+
 
 mongo-c-driver 1.0.0
 ====================

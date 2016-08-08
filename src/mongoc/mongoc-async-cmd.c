@@ -33,7 +33,7 @@
 #undef MONGOC_LOG_DOMAIN
 #define MONGOC_LOG_DOMAIN "async"
 
-typedef mongoc_async_cmd_result_t (*_monogc_async_cmd_phase_t)(
+typedef mongoc_async_cmd_result_t (*_mongoc_async_cmd_phase_t)(
    mongoc_async_cmd_t *cmd);
 
 mongoc_async_cmd_result_t
@@ -44,15 +44,14 @@ mongoc_async_cmd_result_t
 _mongoc_async_cmd_phase_recv_len (mongoc_async_cmd_t *cmd);
 mongoc_async_cmd_result_t
 _mongoc_async_cmd_phase_recv_rpc (mongoc_async_cmd_t *cmd);
-mongoc_async_cmd_result_t
-_mongoc_async_cmd_phase_error (mongoc_async_cmd_t *cmd);
 
-static const _monogc_async_cmd_phase_t gMongocCMDPhases[] = {
+static const _mongoc_async_cmd_phase_t gMongocCMDPhases[] = {
    _mongoc_async_cmd_phase_setup,
    _mongoc_async_cmd_phase_send,
    _mongoc_async_cmd_phase_recv_len,
    _mongoc_async_cmd_phase_recv_rpc,
-   _mongoc_async_cmd_phase_error,
+   NULL,  /* no callback for MONGOC_ASYNC_CMD_ERROR_STATE    */
+   NULL,  /* no callback for MONGOC_ASYNC_CMD_CANCELED_STATE */
 };
 
 #ifdef MONGOC_ENABLE_SSL
@@ -97,8 +96,14 @@ mongoc_async_cmd_run (mongoc_async_cmd_t *acmd)
 {
    mongoc_async_cmd_result_t result;
    int64_t rtt;
+   _mongoc_async_cmd_phase_t phase_callback;
 
-   result = gMongocCMDPhases[acmd->state](acmd);
+   phase_callback = gMongocCMDPhases[acmd->state];
+   if (phase_callback) {
+      result = phase_callback (acmd);
+   } else {
+      result = MONGOC_ASYNC_CMD_ERROR;
+   }
 
    if (result == MONGOC_ASYNC_CMD_IN_PROGRESS) {
       return true;
@@ -109,7 +114,7 @@ mongoc_async_cmd_run (mongoc_async_cmd_t *acmd)
    if (result == MONGOC_ASYNC_CMD_SUCCESS) {
       acmd->cb (result, &acmd->reply, rtt, acmd->data, &acmd->error);
    } else {
-      /* we're either in ERROR or TIMEOUT */
+      /* we're in ERROR, TIMEOUT, or CANCELED */
       acmd->cb (result, NULL, rtt, acmd->data, &acmd->error);
    }
 
@@ -167,9 +172,9 @@ mongoc_async_cmd_new (mongoc_async_t           *async,
    mongoc_async_cmd_t *tmp;
    bool found = false;
 
-   bson_return_val_if_fail(cmd, NULL);
-   bson_return_val_if_fail(dbname, NULL);
-   bson_return_val_if_fail(stream, NULL);
+   BSON_ASSERT (cmd);
+   BSON_ASSERT (dbname);
+   BSON_ASSERT (stream);
 
    acmd = (mongoc_async_cmd_t *)bson_malloc0 (sizeof (*acmd));
    acmd->async = async;
@@ -212,7 +217,7 @@ mongoc_async_cmd_new (mongoc_async_t           *async,
 void
 mongoc_async_cmd_destroy (mongoc_async_cmd_t *acmd)
 {
-   bson_return_if_fail (acmd);
+   BSON_ASSERT (acmd);
 
    DL_DELETE (acmd->async->cmds, acmd);
    acmd->async->ncmds--;
@@ -311,6 +316,13 @@ _mongoc_async_cmd_phase_recv_len (mongoc_async_cmd_t *acmd)
       return MONGOC_ASYNC_CMD_ERROR;
    }
 
+   if (bytes == 0) {
+      bson_set_error (&acmd->error, MONGOC_ERROR_STREAM,
+                      MONGOC_ERROR_STREAM_SOCKET,
+                      "Server closed connection.");
+      return MONGOC_ASYNC_CMD_ERROR;
+   }
+
    acmd->bytes_to_read -= bytes;
 
    if (!acmd->bytes_to_read) {
@@ -345,6 +357,13 @@ _mongoc_async_cmd_phase_recv_rpc (mongoc_async_cmd_t *acmd)
       bson_set_error (&acmd->error, MONGOC_ERROR_STREAM,
                       MONGOC_ERROR_STREAM_SOCKET,
                       "Failed to receive rpc bytes from server.");
+      return MONGOC_ASYNC_CMD_ERROR;
+   }
+
+   if (bytes == 0) {
+      bson_set_error (&acmd->error, MONGOC_ERROR_STREAM,
+                      MONGOC_ERROR_STREAM_SOCKET,
+                      "Server closed connection.");
       return MONGOC_ASYNC_CMD_ERROR;
    }
 
@@ -384,10 +403,4 @@ _mongoc_async_cmd_phase_recv_rpc (mongoc_async_cmd_t *acmd)
    }
 
    return MONGOC_ASYNC_CMD_IN_PROGRESS;
-}
-
-mongoc_async_cmd_result_t
-_mongoc_async_cmd_phase_error (mongoc_async_cmd_t *acmd)
-{
-   return MONGOC_ASYNC_CMD_ERROR;
 }

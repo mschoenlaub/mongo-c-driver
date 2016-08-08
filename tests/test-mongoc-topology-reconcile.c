@@ -15,19 +15,29 @@
 
 
 static const mongoc_topology_scanner_node_t *
-get_node (const mongoc_topology_scanner_t *ts,
+get_node (mongoc_topology_t *topology,
           const char *host_and_port)
 {
+   const mongoc_topology_scanner_t *ts;
    const mongoc_topology_scanner_node_t *node;
+   const mongoc_topology_scanner_node_t *sought = NULL;
+
+
+   mongoc_mutex_lock (&topology->mutex);
+
+   ts = topology->scanner;
 
    DL_FOREACH (ts->nodes, node)
    {
       if (!strcmp (host_and_port, node->host.host_and_port)) {
-         return node;
+         sought = node;
+         break;
       }
    }
 
-   return NULL;
+   mongoc_mutex_unlock (&topology->mutex);
+
+   return sought;
 }
 
 
@@ -121,6 +131,7 @@ _test_topology_reconcile_rs (bool pooled)
    mongoc_uri_t *uri;
    mongoc_client_pool_t *pool = NULL;
    mongoc_client_t *client;
+   debug_stream_stats_t debug_stream_stats = { 0 };
    mongoc_read_prefs_t *secondary_read_prefs;
    mongoc_read_prefs_t *primary_read_prefs;
    mongoc_read_prefs_t *tag_read_prefs;
@@ -149,6 +160,10 @@ _test_topology_reconcile_rs (bool pooled)
       client = mongoc_client_new (uri_str);
    }
 
+   if (!pooled) {
+      test_framework_set_debug_stream (client, &debug_stream_stats);
+   }
+
    secondary_read_prefs = mongoc_read_prefs_new (MONGOC_READ_SECONDARY);
    primary_read_prefs = mongoc_read_prefs_new (MONGOC_READ_PRIMARY);
    tag_read_prefs = mongoc_read_prefs_new (MONGOC_READ_NEAREST);
@@ -158,7 +173,7 @@ _test_topology_reconcile_rs (bool pooled)
     * server0 is selected, server1 is discovered and added to scanner.
     */
    assert (selects_server (client, secondary_read_prefs, server0));
-   assert (get_node (client->topology->scanner,
+   assert (get_node (client->topology,
                      mock_server_get_host_and_port (server1)));
 
    /*
@@ -167,15 +182,29 @@ _test_topology_reconcile_rs (bool pooled)
    assert (selects_server (client, primary_read_prefs, server1));
 
    /*
-    * remove server0 from set. tag primary, select w/ tags to trigger re-scan.
+    * remove server1 from set. server0 is the primary, with tags.
     */
-   RS_RESPONSE_TO_ISMASTER (server1, true, true, server1);  /* server0 absent */
+   RS_RESPONSE_TO_ISMASTER (server0, true, true, server0);  /* server1 absent */
 
-   assert (selects_server (client, tag_read_prefs, server1));
+   assert (selects_server (client, tag_read_prefs, server0));
    assert (!client->topology->stale);
 
-   assert (!get_node (client->topology->scanner,
-                      mock_server_get_host_and_port (server0)));
+   if (!pooled) {
+      ASSERT_CMPINT (1, ==, debug_stream_stats.n_failed);
+   }
+
+   /*
+    * server1 returns as a secondary. its scanner node is un-retired.
+    */
+   RS_RESPONSE_TO_ISMASTER (server0, true, true, server0, server1);
+   RS_RESPONSE_TO_ISMASTER (server1, false, false, server0, server1);
+
+   assert (selects_server (client, secondary_read_prefs, server1));
+
+   if (!pooled) {
+      /* no additional failed streams */
+      ASSERT_CMPINT (1, ==, debug_stream_stats.n_failed);
+   }
 
    mongoc_read_prefs_destroy (primary_read_prefs);
    mongoc_read_prefs_destroy (secondary_read_prefs);
@@ -232,7 +261,7 @@ _test_topology_reconcile_sharded (bool pooled)
 
    /* provide both servers in seed list */
    uri_str = bson_strdup_printf (
-      "mongodb://%s,%s/?connectTimeoutMS=10&serverselectiontimeoutms=1000",
+      "mongodb://%s,%s",
       mock_server_get_host_and_port (mongos),
       mock_server_get_host_and_port (secondary));
 
@@ -283,13 +312,13 @@ _test_topology_reconcile_sharded (bool pooled)
    if (pooled) {
       /* wait a second for scanner thread to remove secondary */
       int64_t start = bson_get_monotonic_time ();
-      while (get_node (client->topology->scanner,
+      while (get_node (client->topology,
                        mock_server_get_host_and_port (secondary)))
       {
          assert (bson_get_monotonic_time () - start < 1000000);
       }
    } else {
-      assert (!get_node (client->topology->scanner,
+      assert (!get_node (client->topology,
                          mock_server_get_host_and_port (secondary)));
    }
 
