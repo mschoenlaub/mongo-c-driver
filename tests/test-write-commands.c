@@ -9,23 +9,7 @@
 #include "TestSuite.h"
 
 #include "test-libmongoc.h"
-#include "mongoc-tests.h"
 #include "test-conveniences.h"
-
-
-static mongoc_collection_t *
-get_test_collection (mongoc_client_t *client,
-                     const char      *prefix)
-{
-   mongoc_collection_t *ret;
-   char *str;
-
-   str = gen_collection_name (prefix);
-   ret = mongoc_client_get_collection (client, "test", str);
-   bson_free (str);
-
-   return ret;
-}
 
 
 static void
@@ -42,6 +26,7 @@ test_split_insert (void)
    bson_error_t error;
    mongoc_server_stream_t *server_stream;
    int i;
+   bool r;
 
    client = test_framework_client_new ();
    assert (client);
@@ -74,8 +59,9 @@ test_split_insert (void)
    _mongoc_write_command_execute (&command, client, server_stream, collection->db,
                                   collection->collection, NULL, 0, &result);
 
-   ASSERT_OR_PRINT (_mongoc_write_result_complete (&result, &reply, &error),
-                    error);
+   r = _mongoc_write_result_complete (&result, 2, collection->write_concern,
+                                      &reply, &error);
+   ASSERT_OR_PRINT (r, error);
    assert (result.nInserted == 3000);
 
    _mongoc_write_command_destroy (&command);
@@ -119,7 +105,7 @@ test_invalid_write_concern (void)
    assert(write_concern);
    mongoc_write_concern_set_w(write_concern, 0);
    mongoc_write_concern_set_journal(write_concern, true);
-   assert(!_mongoc_write_concern_is_valid(write_concern));
+   assert(!mongoc_write_concern_is_valid (write_concern));
 
    doc = BCON_NEW("_id", BCON_INT32(0));
 
@@ -132,7 +118,8 @@ test_invalid_write_concern (void)
                                   collection->db, collection->collection,
                                   write_concern, 0, &result);
 
-   r = _mongoc_write_result_complete (&result, &reply, &error);
+   r = _mongoc_write_result_complete (&result, 2, collection->write_concern,
+                                      &reply, &error);
 
    assert(!r);
    ASSERT_CMPINT(error.domain, ==, MONGOC_ERROR_COMMAND);
@@ -246,8 +233,8 @@ test_bypass_validation (void *context)
 void
 test_write_command_install (TestSuite *suite)
 {
-   TestSuite_Add (suite, "/WriteCommand/split_insert", test_split_insert);
-   TestSuite_Add (suite, "/WriteCommand/invalid_write_concern", test_invalid_write_concern);
+   TestSuite_AddLive (suite, "/WriteCommand/split_insert", test_split_insert);
+   TestSuite_AddLive (suite, "/WriteCommand/invalid_write_concern", test_invalid_write_concern);
    TestSuite_AddFull (suite, "/WriteCommand/bypass_validation", test_bypass_validation,
                       NULL, NULL,
                       test_framework_skip_if_max_version_version_less_than_4);

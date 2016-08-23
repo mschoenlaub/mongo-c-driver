@@ -5,11 +5,98 @@
 
 #include "TestSuite.h"
 #include "test-libmongoc.h"
-#include "mongoc-tests.h"
 #include "mongoc-client-private.h"
 #include "mongoc-database-private.h"
 #include "mock_server/future-functions.h"
 #include "mock_server/mock-server.h"
+#include "test-conveniences.h"
+
+
+static void
+test_create_with_write_concern (void)
+{
+   mongoc_database_t *database;
+   mongoc_collection_t *collection;
+   mongoc_client_t *client;
+   bson_error_t error = { 0 };
+   mongoc_write_concern_t *bad_wc;
+   mongoc_write_concern_t *good_wc;
+   bool wire_version_5;
+
+   char *dbname;
+   char *name;
+
+   capture_logs (true);
+
+   client = test_framework_client_new ();
+   assert (client);
+   mongoc_client_set_error_api (client, 2);
+
+   bad_wc = mongoc_write_concern_new ();
+   good_wc = mongoc_write_concern_new ();
+
+   wire_version_5 = test_framework_max_wire_version_at_least (5);
+
+   dbname = gen_collection_name ("dbtest");
+   database = mongoc_client_get_database (client, dbname);
+   assert (database);
+
+   name = gen_collection_name ("create_collection");
+
+   /* writeConcern that will not pass mongoc_write_concern_is_valid */
+   bad_wc->wtimeout = -10;
+   collection = mongoc_database_create_collection_with_write_concern (
+      database, name, NULL, bad_wc, &error);
+   ASSERT_ERROR_CONTAINS (error, MONGOC_ERROR_COMMAND,
+                          MONGOC_ERROR_COMMAND_INVALID_ARG,
+                          "Invalid mongoc_write_concern_t");
+   ASSERT (!collection);
+   bad_wc->wtimeout = 0;
+   error.code = 0;
+   error.domain = 0;
+
+   /* valid writeConcern on all configs */
+   mongoc_write_concern_set_w (good_wc, 1);
+   collection = mongoc_database_create_collection_with_write_concern (
+      database, name, NULL, good_wc, &error);
+   ASSERT_OR_PRINT (collection, error);
+   ASSERT (!error.code);
+   ASSERT (!error.domain);
+
+   ASSERT_OR_PRINT (mongoc_collection_drop (collection, &error),
+                    error);
+
+   /* writeConcern that results in writeConcernError */
+   mongoc_write_concern_set_w (bad_wc, 99);
+   if (!test_framework_is_mongos ()) { /* skip if sharded */
+      collection = mongoc_database_create_collection_with_write_concern (
+         database, name, NULL, bad_wc, &error);
+
+      if (wire_version_5) {
+         ASSERT (!collection);
+         if (test_framework_is_replset ()) { /* replica set */
+            ASSERT_ERROR_CONTAINS (error, MONGOC_ERROR_WRITE_CONCERN,
+                                   100, "Write Concern error:");
+         } else { /* standalone */
+            ASSERT_CMPINT (error.domain, ==, MONGOC_ERROR_SERVER);
+            ASSERT_CMPINT (error.code, ==, 2);
+         }
+      } else { /* if wire_version <= 4, no error */
+         ASSERT_OR_PRINT (collection, error);
+         ASSERT (!error.code);
+         ASSERT (!error.domain);
+         ASSERT_OR_PRINT (mongoc_collection_drop (collection, &error),
+                          error);
+      }
+   }
+
+   mongoc_database_destroy (database);
+   bson_free (name);
+   bson_free (dbname);
+   mongoc_write_concern_destroy (good_wc);
+   mongoc_write_concern_destroy (bad_wc);
+   mongoc_client_destroy (client);
+}
 
 
 static void
@@ -125,6 +212,7 @@ test_command (void)
    assert (error.code == MONGOC_ERROR_QUERY_COMMAND_NOT_FOUND);
    assert (strstr (error.message, "a_non_existing_command"));
 
+   bson_destroy (&reply);
    mongoc_database_destroy (database);
    mongoc_client_destroy (client);
    bson_destroy (&cmd);
@@ -132,26 +220,226 @@ test_command (void)
 
 
 static void
+_test_db_command_read_prefs (bool simple, bool pooled)
+{
+   mock_server_t *server;
+   mongoc_client_pool_t *pool = NULL;
+   mongoc_client_t *client;
+   mongoc_database_t *db;
+   mongoc_read_prefs_t *secondary_pref;
+   bson_t *cmd;
+   future_t *future;
+   bson_error_t error;
+   request_t *request;
+   mongoc_cursor_t *cursor;
+   const bson_t *reply;
+
+   /* mock mongos: easiest way to test that read preference is configured */
+   server = mock_mongos_new (0);
+   mock_server_run (server);
+
+   if (pooled) {
+      pool = mongoc_client_pool_new (mock_server_get_uri (server));
+      client = mongoc_client_pool_pop (pool);
+   } else {
+      client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   }
+
+   db = mongoc_client_get_database (client, "db");
+   secondary_pref = mongoc_read_prefs_new (MONGOC_READ_SECONDARY);
+   mongoc_database_set_read_prefs (db, secondary_pref);
+   cmd = tmp_bson ("{'foo': 1}");
+
+   if (simple) {
+      /* simple, without read preference */
+      future = future_database_command_simple (db, cmd,
+                                               NULL, NULL, &error);
+
+      request = mock_server_receives_command (
+         server, "db", MONGOC_QUERY_NONE, "{'foo': 1}");
+
+      mock_server_replies_simple (request, "{'ok': 1}");
+      ASSERT_OR_PRINT (future_get_bool (future), error);
+      future_destroy (future);
+      request_destroy (request);
+
+      /* with read preference */
+      future = future_database_command_simple (db, cmd,
+                                               secondary_pref, NULL, &error);
+
+      request = mock_server_receives_command (
+         server, "db", MONGOC_QUERY_SLAVE_OK,
+         "{'$query': {'foo': 1},"
+         " '$readPreference': {'mode': 'secondary'}}");
+      mock_server_replies_simple (request, "{'ok': 1}");
+      ASSERT_OR_PRINT (future_get_bool (future), error);
+      future_destroy (future);
+      request_destroy (request);
+   } else {
+      /* not simple, no read preference */
+      cursor = mongoc_database_command (db, MONGOC_QUERY_NONE, 0, 0, 0,
+                                        cmd, NULL, NULL);
+      future = future_cursor_next (cursor, &reply);
+      request = mock_server_receives_command (
+         server, "db", MONGOC_QUERY_NONE, "{'foo': 1}");
+
+      mock_server_replies_simple (request, "{'ok': 1}");
+      ASSERT (future_get_bool (future));
+      future_destroy (future);
+      request_destroy (request);
+      mongoc_cursor_destroy (cursor);
+
+      /* with read preference */
+      cursor = mongoc_database_command (db, MONGOC_QUERY_NONE, 0, 0, 0,
+                                        cmd, NULL, secondary_pref);
+      future = future_cursor_next (cursor, &reply);
+      request = mock_server_receives_command (
+         server, "db", MONGOC_QUERY_SLAVE_OK,
+         "{'$query': {'foo': 1},"
+         " '$readPreference': {'mode': 'secondary'}}");
+
+      mock_server_replies_simple (request, "{'ok': 1}");
+      ASSERT (future_get_bool (future));
+      future_destroy (future);
+      request_destroy (request);
+      mongoc_cursor_destroy (cursor);
+   }
+
+   mongoc_database_destroy (db);
+   mongoc_read_prefs_destroy (secondary_pref);
+
+   if (pooled) {
+      mongoc_client_pool_push (pool, client);
+      mongoc_client_pool_destroy (pool);
+   } else {
+      mongoc_client_destroy (client);
+   }
+
+   mock_server_destroy (server);
+}
+
+
+static void
+test_db_command_simple_read_prefs_single (void)
+{
+   _test_db_command_read_prefs (true, false);
+}
+
+
+static void
+test_db_command_simple_read_prefs_pooled (void)
+{
+   _test_db_command_read_prefs (true, true);
+}
+
+
+static void
+test_db_command_read_prefs_single (void)
+{
+   _test_db_command_read_prefs (false, false);
+}
+
+
+static void
+test_db_command_read_prefs_pooled (void)
+{
+   _test_db_command_read_prefs (false, true);
+}
+
+
+static void
 test_drop (void)
 {
-   mongoc_database_t *database;
    mongoc_client_t *client;
+   mongoc_database_t *database;
+   mongoc_collection_t *collection;
    bson_error_t error = { 0 };
    char *dbname;
+   mongoc_write_concern_t *good_wc;
+   mongoc_write_concern_t *bad_wc;
+   bool wire_version_5;
+   bool r;
 
    client = test_framework_client_new ();
    assert (client);
+   mongoc_client_set_error_api (client, 2);
+
+   bad_wc = mongoc_write_concern_new ();
+   good_wc = mongoc_write_concern_new ();
+   wire_version_5 = test_framework_max_wire_version_at_least (5);
 
    dbname = gen_collection_name ("db_drop_test");
    database = mongoc_client_get_database (client, dbname);
-   bson_free (dbname);
+
+   /* MongoDB 3.2+ must create at least one replicated database before
+    * dropDatabase will check writeConcern, see SERVER-25601 */
+   collection = mongoc_database_get_collection (database, "collection");
+   r = mongoc_collection_insert (collection, MONGOC_INSERT_NONE, tmp_bson ("{}"),
+                                 NULL, &error);
+
+   ASSERT_OR_PRINT (r, error);
 
    ASSERT_OR_PRINT (mongoc_database_drop (database, &error), error);
    assert (!error.domain);
    assert (!error.code);
 
    mongoc_database_destroy (database);
+
+   /* invalid writeConcern */
+   bad_wc->wtimeout = -10;
+   database = mongoc_client_get_database (client, dbname);
+
+   ASSERT (!mongoc_database_drop_with_write_concern (database,
+                                                     bad_wc,
+                                                     &error));
+   ASSERT_ERROR_CONTAINS (error, MONGOC_ERROR_COMMAND,
+                          MONGOC_ERROR_COMMAND_INVALID_ARG,
+                          "Invalid mongoc_write_concern_t");
+   bad_wc->wtimeout = 0;
+   error.code = 0;
+   error.domain = 0;
+
+   /* valid writeConcern */
+   mongoc_write_concern_set_w (good_wc, 1);
+
+   ASSERT_OR_PRINT (mongoc_database_drop_with_write_concern (database,
+                                                             good_wc,
+                                                             &error),
+                    error);
+   assert (!error.code);
+   assert (!error.domain);
+
+   /* invalid writeConcern */
+   mongoc_write_concern_set_w (bad_wc, 99);
+   mongoc_database_destroy (database);
+
+   if (!test_framework_is_mongos ()) { /* skip if sharded */
+      database = mongoc_client_get_database (client, dbname);
+      r = mongoc_database_drop_with_write_concern (database,
+                                                   bad_wc,
+                                                   &error);
+      if (wire_version_5) {
+         ASSERT (!r);
+         if (test_framework_is_replset ()) {
+            ASSERT_ERROR_CONTAINS (error, MONGOC_ERROR_WRITE_CONCERN,
+                                   100, "Write Concern error:");
+         } else { /* standalone */
+            ASSERT_CMPINT (error.domain, ==, MONGOC_ERROR_SERVER);
+            ASSERT_CMPINT (error.code, ==, 2);
+         }
+      } else { /* if wire_version <= 4, no error */
+         ASSERT_OR_PRINT (r, error);
+         ASSERT (!error.code);
+         ASSERT (!error.domain);
+         mongoc_database_destroy (database);
+      }
+   }
+
+   bson_free (dbname);
+   mongoc_collection_destroy (collection);
    mongoc_client_destroy (client);
+   mongoc_write_concern_destroy (good_wc);
+   mongoc_write_concern_destroy (bad_wc);
 }
 
 
@@ -465,6 +753,8 @@ test_get_collection_names_error (void)
    request_t *request;
    char **names;
 
+   capture_logs (true);
+
    server = mock_server_new ();
    mock_server_auto_ismaster (server, "{'ismaster': true,"
                                        " 'maxWireVersion': 3}");
@@ -472,8 +762,6 @@ test_get_collection_names_error (void)
    client = mongoc_client_new_from_uri (mock_server_get_uri (server));
 
    database = mongoc_client_get_database (client, "test");
-   suppress_one_message ();
-   suppress_one_message ();
    future = future_database_get_collection_names (database, &error);
    request = mock_server_receives_command (server,
                                             "test",
@@ -517,18 +805,28 @@ test_get_default_database (void)
 void
 test_database_install (TestSuite *suite)
 {
-   TestSuite_Add (suite, "/Database/copy", test_copy);
-   TestSuite_Add (suite, "/Database/has_collection", test_has_collection);
-   TestSuite_Add (suite, "/Database/command", test_command);
-   TestSuite_Add (suite, "/Database/drop", test_drop);
-   TestSuite_Add (suite, "/Database/create_collection", test_create_collection);
-   TestSuite_Add (suite, "/Database/get_collection_info",
+   TestSuite_AddLive (suite, "/Database/create_with_write_concern",
+                      test_create_with_write_concern);
+   TestSuite_AddLive (suite, "/Database/copy", test_copy);
+   TestSuite_AddLive (suite, "/Database/has_collection", test_has_collection);
+   TestSuite_AddLive (suite, "/Database/command", test_command);
+   TestSuite_Add (suite, "/Database/command/read_prefs/simple/single",
+                  test_db_command_simple_read_prefs_single);
+   TestSuite_Add (suite, "/Database/command/read_prefs/simple/pooled",
+                  test_db_command_simple_read_prefs_pooled);
+   TestSuite_Add (suite, "/Database/command/read_prefs/single",
+                  test_db_command_read_prefs_single);
+   TestSuite_Add (suite, "/Database/command/read_prefs/pooled",
+                  test_db_command_read_prefs_pooled);
+   TestSuite_AddLive (suite, "/Database/drop", test_drop);
+   TestSuite_AddLive (suite, "/Database/create_collection", test_create_collection);
+   TestSuite_AddLive (suite, "/Database/get_collection_info",
                   test_get_collection_info);
-   TestSuite_Add (suite, "/Database/get_collection",
+   TestSuite_AddLive (suite, "/Database/get_collection",
                   test_get_collection);
-   TestSuite_Add (suite, "/Database/get_collection_names",
+   TestSuite_AddLive (suite, "/Database/get_collection_names",
                   test_get_collection_names);
-   TestSuite_Add (suite, "/Database/get_collection_names_error",
+   TestSuite_AddLive (suite, "/Database/get_collection_names_error",
                   test_get_collection_names_error);
    TestSuite_Add (suite, "/Database/get_default_database",
                   test_get_default_database);

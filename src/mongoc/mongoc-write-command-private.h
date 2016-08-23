@@ -17,7 +17,7 @@
 #ifndef MONGOC_WRITE_COMMAND_PRIVATE_H
 #define MONGOC_WRITE_COMMAND_PRIVATE_H
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
@@ -54,7 +54,7 @@ struct _mongoc_bulk_write_flags_t
 typedef struct
 {
    int      type;
-   uint32_t hint;
+   uint32_t server_id;
    bson_t  *documents;
    uint32_t n_documents;
    mongoc_bulk_write_flags_t flags;
@@ -137,9 +137,12 @@ void _mongoc_write_result_merge        (mongoc_write_result_t         *result,
 void _mongoc_write_result_merge_legacy (mongoc_write_result_t         *result,
                                         mongoc_write_command_t        *command,
                                         const bson_t                  *reply,
+                                        int32_t                        error_api_version,
                                         mongoc_error_code_t            default_code,
                                         uint32_t                       offset);
 bool _mongoc_write_result_complete     (mongoc_write_result_t         *result,
+                                        int32_t                        error_api_version,
+                                        const mongoc_write_concern_t  *wc,
                                         bson_t                        *reply,
                                         bson_error_t                  *error);
 void _mongoc_write_result_destroy      (mongoc_write_result_t         *result);

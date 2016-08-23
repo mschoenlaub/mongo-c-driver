@@ -17,7 +17,7 @@
 #ifndef MONGOC_CLUSTER_PRIVATE_H
 #define MONGOC_CLUSTER_PRIVATE_H
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
@@ -90,10 +90,6 @@ mongoc_cluster_get_max_msg_size (mongoc_cluster_t *cluster);
 
 int32_t
 mongoc_cluster_node_max_wire_version (mongoc_cluster_t *cluster,
-                                      uint32_t          server_id);
-
-int32_t
-mongoc_cluster_node_min_wire_version (mongoc_cluster_t *cluster,
                                       uint32_t          server_id);
 
 bool

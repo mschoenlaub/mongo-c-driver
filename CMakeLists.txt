@@ -2,37 +2,120 @@ cmake_minimum_required(VERSION 2.8)
 
 project (libmongoc)
 
-# CDRIVER-749 TODO: This needs to be updated for --enable-openssl and friends
-option(ENABLE_SSL
-       "Use OpenSSL for TLS connections and SCRAM-SHA-1 authentication.\
-NOTE: OpenSSL is required for authenticating to MongoDB 3.0 and later."
-       ON)
+set (ENABLE_SSL AUTO CACHE STRING
+     "Enable TLS connections and SCRAM-SHA-1 authentication.\ Options are
+     \"DARWIN\" to use Apple's Secure Transport, \"WINDOWS\" to use Windows
+     Secure Channel, \"OPENSSL\", \"AUTO\",\ or \"OFF\". These options are
+     case-sensitive. The default is \"AUTO\". Note\ that SCRAM-SHA-1 is
+     required for authenticating to MongoDB 3.0 and later.")
 
 option(ENABLE_SASL "Use Cyrus SASL library for Kerberos." ON)
 option(ENABLE_TESTS "Build MongoDB C Driver tests." ON)
 option(ENABLE_EXAMPLES "Build MongoDB C Driver examples." ON)
+option(ENABLE_AUTOMATIC_INIT_AND_CLEANUP "Enable automatic init and cleanup (GCC only)" ON)
+option(ENABLE_CRYPTO_SYSTEM_PROFILE "Use system crypto profile (OpenSSL only)" OFF)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/build/cmake)
 
 include(InstallRequiredSystemLibraries)
 include(FindBSON REQUIRED)
 
-if (ENABLE_SSL)
-    include(FindOpenSSL)
+if (NOT (ENABLE_SSL STREQUAL DARWIN
+         OR ENABLE_SSL STREQUAL WINDOWS
+         OR ENABLE_SSL STREQUAL OPENSSL
+         OR ENABLE_SSL STREQUAL AUTO
+         OR ENABLE_SSL STREQUAL OFF))
+   message (FATAL_ERROR
+            "ENABLE_SSL option must be DARWIN, WINDOWS, OPENSSL, AUTO, or OFF")
+endif()
+
+if (NOT ENABLE_SSL STREQUAL OFF)
+   # If "AUTO", try OpenSSL. In version 2.0 we'll default to "DARWIN" on Mac.
+   if (ENABLE_SSL STREQUAL AUTO OR ENABLE_SSL STREQUAL OPENSSL)
+      # Sets OPENSSL_FOUND on success.
+      include (FindOpenSSL)
+   endif ()
+
+   if (ENABLE_SSL STREQUAL LIBRESSL)
+      set (LIBRESSL 1)
+   endif ()
+
+   if (ENABLE_SSL STREQUAL DARWIN)
+      if (APPLE)
+         set (SECURE_TRANSPORT 1)
+      else ()
+         message (FATAL_ERROR "ENABLE_SSL=DARWIN only supported on Mac OS X")
+      endif ()
+   endif ()
+
+   if (ENABLE_SSL STREQUAL AUTO AND NOT OPENSSL_FOUND AND APPLE)
+      set (SECURE_TRANSPORT 1)
+   endif ()
+
+   if (ENABLE_SSL STREQUAL WINDOWS)
+      if (WIN32)
+         set (SECURE_CHANNEL 1)
+      else ()
+         message (FATAL_ERROR "ENABLE_SSL=WINDOWS only supported on Windows")
+      endif ()
+   endif ()
+
+   if (ENABLE_SSL STREQUAL AUTO AND NOT OPENSSL_FOUND AND WIN32)
+      set (SECURE_CHANNEL 1)
+   endif ()
+
+   if (NOT OPENSSL_FOUND AND NOT SECURE_TRANSPORT AND NOT SECURE_CHANNEL AND NOT LIBRESSL)
+      if (ENABLE_SSL STREQUAL AUTO)
+         set (ENABLE_SSL OFF)
+      else ()
+         message (FATAL_ERROR "No SSL library found")
+      endif ()
+   endif ()
 endif ()
-if (ENABLE_SSL AND OPENSSL_FOUND)
+
+# Defaults.
+set (MONGOC_ENABLE_SSL 0)
+set (MONGOC_ENABLE_SSL_OPENSSL 0)
+set (MONGOC_ENABLE_SSL_LIBRESSL 0)
+set (MONGOC_ENABLE_SSL_SECURE_TRANSPORT 0)
+set (MONGOC_ENABLE_SSL_SECURE_CHANNEL 0)
+
+set (MONGOC_ENABLE_CRYPTO 0)
+set (MONGOC_ENABLE_CRYPTO_LIBCRYPTO 0)
+set (MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO 0)
+set (MONGOC_ENABLE_CRYPTO_CNG 0)
+
+set (MONGOC_ENABLE_CRYPTO_SYSTEM_PROFILE 0)
+
+if (OPENSSL_FOUND)
    set (MONGOC_ENABLE_SSL 1)
-   set (MONGOC_ENABLE_OPENSSL 1)
-   set (MONGOC_ENABLE_LIBCRYPTO 1)
+   set (MONGOC_ENABLE_SSL_OPENSSL 1)
    set (MONGOC_ENABLE_CRYPTO 1)
-else ()
-   set (MONGOC_ENABLE_SSL 0)
-   set (MONGOC_ENABLE_OPENSSL 0)
-   set (MONGOC_ENABLE_LIBCRYPTO 0)
-   set (MONGOC_ENABLE_CRYPTO 0)
+   set (MONGOC_ENABLE_CRYPTO_LIBCRYPTO 1)
+elseif (SECURE_TRANSPORT)
+   set (MONGOC_ENABLE_SSL 1)
+   set (MONGOC_ENABLE_SSL_SECURE_TRANSPORT 1)
+   set (MONGOC_ENABLE_CRYPTO 1)
+   set (MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO 1)
+elseif (SECURE_CHANNEL)
+   set (MONGOC_ENABLE_SSL 1)
+   set (MONGOC_ENABLE_SSL_SECURE_CHANNEL 1)
+   set (MONGOC_ENABLE_CRYPTO 1)
+   set (MONGOC_ENABLE_CRYPTO_CNG 1)
+elseif (LIBRESSL)
+   set (MONGOC_ENABLE_SSL 1)
+   set (MONGOC_ENABLE_SSL_LIBRESSL 1)
+   set (MONGOC_ENABLE_CRYPTO 1)
+   set (MONGOC_ENABLE_CRYPTO_LIBCRYPTO 1)
 endif ()
-set (MONGOC_ENABLE_SECURE_TRANSPORT 0)
-set (MONGOC_ENABLE_COMMON_CRYPTO 0)
+
+if (ENABLE_CRYPTO_SYSTEM_PROFILE)
+   if (OPENSSL_FOUND)
+      set (MONGOC_ENABLE_CRYPTO_SYSTEM_PROFILE 1)
+   else ()
+      message (FATAL_ERROR "ENABLE_CRYPTO_SYSTEM_PROFILE only available with OpenSSL")
+   endif ()
+endif ()
 
 if (ENABLE_SASL)
    include(FindSASL2)
@@ -43,6 +126,15 @@ else ()
    set (MONGOC_HAVE_SASL_CLIENT_DONE 0)
    set (MONGOC_ENABLE_SASL 0)
 endif ()
+
+if (ENABLE_AUTOMATIC_INIT_AND_CLEANUP)
+   set (MONGOC_NO_AUTOMATIC_GLOBALS 0)
+else ()
+   set (MONGOC_NO_AUTOMATIC_GLOBALS 1)
+endif ()
+
+include(CheckIncludeFiles)
+CHECK_INCLUDE_FILES(strings.h HAVE_STRINGS_H)
 
 set (SOURCE_DIR "${PROJECT_SOURCE_DIR}/")
 
@@ -70,6 +162,10 @@ include (CPack)
 
 set (MONGOC_HAVE_WEAK_SYMBOLS 0)
 
+set (MONGOC_CC ${CMAKE_C_COMPILER})
+set (MONGOC_USER_SET_CFLAGS ${CMAKE_C_FLAGS})
+set (MONGOC_USER_SET_LDFLAGS ${CMAKE_EXE_LINKER_FLAGS})
+
 configure_file (
    "${SOURCE_DIR}/src/mongoc/mongoc-config.h.in"
    "${PROJECT_BINARY_DIR}/src/mongoc/mongoc-config.h"
@@ -94,9 +190,12 @@ if (APPLE)
    cmake_policy(SET CMP0042 OLD)
 endif()
 
+if (MSVC)
+   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+endif ()
+
 add_definitions(-D_GNU_SOURCE)
 add_definitions(-D_BSD_SOURCE)
-add_definitions("-DBINARY_DIR=\"${SOURCE_DIR}/tests/binary\"")
 if (APPLE)
    # Until CDRIVER-520.
    add_definitions(-Wno-deprecated-declarations)
@@ -132,10 +231,12 @@ set (SOURCES
    ${SOURCE_DIR}/src/mongoc/mongoc-index.c
    ${SOURCE_DIR}/src/mongoc/mongoc-init.c
    ${SOURCE_DIR}/src/mongoc/mongoc-list.c
+   ${SOURCE_DIR}/src/mongoc/mongoc-linux-distro-scanner.c
    ${SOURCE_DIR}/src/mongoc/mongoc-log.c
    ${SOURCE_DIR}/src/mongoc/mongoc-matcher.c
    ${SOURCE_DIR}/src/mongoc/mongoc-matcher-op.c
    ${SOURCE_DIR}/src/mongoc/mongoc-memcmp.c
+   ${SOURCE_DIR}/src/mongoc/mongoc-metadata.c
    ${SOURCE_DIR}/src/mongoc/mongoc-opcode.c
    ${SOURCE_DIR}/src/mongoc/mongoc-queue.c
    ${SOURCE_DIR}/src/mongoc/mongoc-read-concern.c
@@ -184,8 +285,13 @@ set (HEADERS
    ${SOURCE_DIR}/src/mongoc/mongoc-init.h
    ${SOURCE_DIR}/src/mongoc/mongoc-index.h
    ${SOURCE_DIR}/src/mongoc/mongoc-iovec.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-linux-distro-scanner-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-log.h
    ${SOURCE_DIR}/src/mongoc/mongoc-matcher.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-metadata.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-metadata-compiler-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-metadata-os-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-metadata-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-opcode.h
    ${SOURCE_DIR}/src/mongoc/mongoc-opcode-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-read-concern.h
@@ -193,6 +299,8 @@ set (HEADERS
    ${SOURCE_DIR}/src/mongoc/mongoc-server-description.h
    ${SOURCE_DIR}/src/mongoc/mongoc-socket.h
    ${SOURCE_DIR}/src/mongoc/mongoc-socket-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-libressl-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-libressl.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-bio-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl.h
@@ -202,44 +310,82 @@ set (HEADERS
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-file.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-gridfs.h
    ${SOURCE_DIR}/src/mongoc/mongoc-stream-socket.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-trace.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-trace-private.h
    ${SOURCE_DIR}/src/mongoc/mongoc-uri.h
    ${SOURCE_DIR}/src/mongoc/mongoc-version-functions.h
    ${SOURCE_DIR}/src/mongoc/mongoc-write-concern.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-rand.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-ssl.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-ssl-private.h
+   ${SOURCE_DIR}/src/mongoc/mongoc-sasl-private.h
 )
 
-if (OPENSSL_FOUND)
-   set (HEADERS ${HEADERS}
-      ${SOURCE_DIR}/src/mongoc/mongoc-rand.h
-      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.h
-      ${SOURCE_DIR}/src/mongoc/mongoc-ssl.h)
+if (NOT ENABLE_SSL STREQUAL OFF)
    set (SOURCES ${SOURCES}
-      ${SOURCE_DIR}/src/mongoc/mongoc-crypto.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-crypto-openssl.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-rand-openssl.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-scram.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-bio.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-ssl.c
-      ${SOURCE_DIR}/src/mongoc/mongoc-openssl.c
+        ${SOURCE_DIR}/src/mongoc/mongoc-crypto.c
+        ${SOURCE_DIR}/src/mongoc/mongoc-scram.c
+        ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls.c
+        ${SOURCE_DIR}/src/mongoc/mongoc-ssl.c
    )
-   set(LIBS ${LIBS} ${OPENSSL_LIBRARIES})
-   include_directories(${OPENSSL_INCLUDE_DIR})
-endif()
+
+   if (OPENSSL_FOUND)
+      set (SOURCES ${SOURCES}
+           ${SOURCE_DIR}/src/mongoc/mongoc-crypto-openssl.c
+           ${SOURCE_DIR}/src/mongoc/mongoc-rand-openssl.c
+           ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl.c
+           ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-openssl-bio.c
+           ${SOURCE_DIR}/src/mongoc/mongoc-openssl.c
+      )
+      set (LIBS ${LIBS} ${OPENSSL_LIBRARIES})
+      include_directories (${OPENSSL_INCLUDE_DIR})
+      if(WIN32)
+         set(LIBS ${LIBS} crypt32.lib)
+      endif()
+   elseif (SECURE_TRANSPORT)
+      set (SOURCES ${SOURCES}
+              ${SOURCE_DIR}/src/mongoc/mongoc-crypto-common-crypto.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-rand-common-crypto.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-secure-transport.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-secure-transport.c
+      )
+      set (LIBS ${LIBS} "-framework CoreFoundation -framework Security")
+   elseif (SECURE_CHANNEL)
+      set (SOURCES ${SOURCES}
+              ${SOURCE_DIR}/src/mongoc/mongoc-crypto-cng.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-rand-cng.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-secure-channel.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-secure-channel.c
+      )
+      set(LIBS ${LIBS} secur32.lib crypt32.lib Bcrypt.lib)
+   elseif (LIBRESSL)
+      set (SOURCES ${SOURCES}
+              ${SOURCE_DIR}/src/mongoc/mongoc-crypto-openssl.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-rand-openssl.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-stream-tls-libressl.c
+              ${SOURCE_DIR}/src/mongoc/mongoc-libressl.c
+      )
+      set(LIBS ${LIBS} "-ltls -lcrypto")
+   endif ()
+endif () # ENABLE_SSL
+
 
 if (MONGOC_ENABLE_SASL)
-   set (HEADERS ${HEADERS} ${SOURCE_DIR}/src/mongoc/mongoc-sasl-private.h)
    set (SOURCES ${SOURCES} ${SOURCE_DIR}/src/mongoc/mongoc-sasl.c)
    set(LIBS ${LIBS} ${SASL2_LIBRARY})
    include_directories(${SASL2_INCLUDE_DIR})
 endif()
 
 if (MSVC)
+   # Export the functions listed in a definitions file.
    if (MONGOC_ENABLE_SSL)
-      set(MONGOC_SHARED_SOURCES ${SOURCES} ${PROJECT_SOURCE_DIR}/build/cmake/libmongoc-ssl.def)
+      set (MONGOC_DEF_FILE ${PROJECT_SOURCE_DIR}/build/cmake/libmongoc-ssl.def)
    else ()
-      set(MONGOC_SHARED_SOURCES ${SOURCES} ${PROJECT_SOURCE_DIR}/build/cmake/libmongoc.def)
-   endif()
+      set (MONGOC_DEF_FILE ${PROJECT_SOURCE_DIR}/build/cmake/libmongoc.def)
+   endif ()
+
+   set(MONGOC_SHARED_SOURCES ${SOURCES} ${MONGOC_DEF_FILE})
 else()
    set(MONGOC_SHARED_SOURCES ${SOURCES})
 endif()
@@ -316,13 +462,17 @@ set(test-libmongoc-sources
    ${SOURCE_DIR}/tests/test-mongoc-command-monitoring.c
    ${SOURCE_DIR}/tests/test-mongoc-cursor.c
    ${SOURCE_DIR}/tests/test-mongoc-database.c
+   ${SOURCE_DIR}/tests/test-mongoc-error.c
    ${SOURCE_DIR}/tests/test-mongoc-exhaust.c
    ${SOURCE_DIR}/tests/test-mongoc-find-and-modify.c
    ${SOURCE_DIR}/tests/test-mongoc-gridfs.c
    ${SOURCE_DIR}/tests/test-mongoc-gridfs-file-page.c
+   ${SOURCE_DIR}/tests/test-mongoc-linux-distro-scanner.c
    ${SOURCE_DIR}/tests/test-mongoc-list.c
    ${SOURCE_DIR}/tests/test-mongoc-log.c
    ${SOURCE_DIR}/tests/test-mongoc-matcher.c
+   ${SOURCE_DIR}/tests/test-mongoc-max-staleness.c
+   ${SOURCE_DIR}/tests/test-mongoc-metadata.c
    ${SOURCE_DIR}/tests/test-mongoc-queue.c
    ${SOURCE_DIR}/tests/test-mongoc-read-prefs.c
    ${SOURCE_DIR}/tests/test-mongoc-rpc.c
@@ -339,8 +489,8 @@ set(test-libmongoc-sources
    ${SOURCE_DIR}/tests/test-mongoc-uri.c
    ${SOURCE_DIR}/tests/test-mongoc-version.c
    ${SOURCE_DIR}/tests/test-mongoc-usleep.c
+   ${SOURCE_DIR}/tests/test-mongoc-util.c
    ${SOURCE_DIR}/tests/test-mongoc-write-concern.c
-   ${SOURCE_DIR}/tests/test-sasl.c
    ${SOURCE_DIR}/tests/test-write-commands.c
    ${SOURCE_DIR}/tests/TestSuite.c
 )
@@ -357,6 +507,12 @@ if (MONGOC_ENABLE_SSL)
       ${SOURCE_DIR}/tests/mongoc-tests.c
    )
 endif()
+
+if (MONGOC_ENABLE_SASL)
+   set(test-libmongoc-sources ${test-libmongoc-sources}
+      ${SOURCE_DIR}/tests/test-sasl.c
+   )
+endif ()
 
 mongoc_add_test(test-load FALSE
    ${SOURCE_DIR}/tests/test-load.c
@@ -381,15 +537,17 @@ if (ENABLE_TESTS)
 endif ()
 
 mongoc_add_example(example-gridfs TRUE ${SOURCE_DIR}/examples/example-gridfs.c)
+mongoc_add_example(
+   example-application-performance-monitoring TRUE
+   ${SOURCE_DIR}/examples/example-application-performance-monitoring.c)
 mongoc_add_example(example-client TRUE ${SOURCE_DIR}/examples/example-client.c)
 mongoc_add_example(example-scram TRUE ${SOURCE_DIR}/examples/example-scram.c)
 mongoc_add_example(mongoc-dump TRUE ${SOURCE_DIR}/examples/mongoc-dump.c)
 mongoc_add_example(mongoc-ping TRUE ${SOURCE_DIR}/examples/mongoc-ping.c)
-mongoc_add_example(mongoc-rpc-validate FALSE ${SOURCE_DIR}/examples/mongoc-rpc-validate.c)
 mongoc_add_example(mongoc-tail TRUE ${SOURCE_DIR}/examples/mongoc-tail.c)
 
 file(COPY ${SOURCE_DIR}/tests/binary DESTINATION ${PROJECT_BINARY_DIR}/tests)
-file(COPY ${SOURCE_DIR}/tests/certificates DESTINATION ${PROJECT_BINARY_DIR}/tests)
+file(COPY ${SOURCE_DIR}/tests/x509gen DESTINATION ${PROJECT_BINARY_DIR}/tests)
 
 install(
   TARGETS mongoc_shared mongoc_static ${EXAMPLES}
@@ -410,12 +568,8 @@ configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/src/libmongoc-1.0.pc.in
   ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-1.0.pc
 @ONLY)
-configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/libmongoc-priv.pc.in
-  ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-priv.pc
-@ONLY)
 install(
-  FILES ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-1.0.pc ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-priv.pc
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/libmongoc-1.0.pc
   DESTINATION lib/pkgconfig
 )
 if (MONGOC_ENABLE_SSL)

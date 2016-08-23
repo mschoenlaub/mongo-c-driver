@@ -17,7 +17,7 @@
 #ifndef MONGOC_CLIENT_POOL_PRIVATE_H
 #define MONGOC_CLIENT_POOL_PRIVATE_H
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
@@ -27,7 +27,13 @@
 
 BSON_BEGIN_DECLS
 
-size_t 				  mongoc_client_pool_get_size(mongoc_client_pool_t *pool);
+/* for tests */
+void
+_mongoc_client_pool_set_stream_initiator (mongoc_client_pool_t      *pool,
+                                          mongoc_stream_initiator_t  si,
+                                          void                      *user_data);
+size_t
+mongoc_client_pool_get_size              (mongoc_client_pool_t      *pool);
 
 BSON_END_DECLS
 

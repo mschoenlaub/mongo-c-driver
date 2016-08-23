@@ -21,8 +21,10 @@
 # error "Only <mongoc.h> can be included directly."
 #endif
 
-#ifdef MONGOC_ENABLE_SECURE_TRANSPORT
+#ifdef MONGOC_ENABLE_SSL_SECURE_TRANSPORT
 #include <bson.h>
+
+#include <Security/Security.h>
 
 BSON_BEGIN_DECLS
 
@@ -34,11 +36,14 @@ BSON_BEGIN_DECLS
  */
 typedef struct
 {
+    SSLContextRef      ssl_ctx_ref;
+    CFArrayRef         anchors;
+    CFMutableArrayRef  my_cert;
 } mongoc_stream_tls_secure_transport_t;
 
 
 BSON_END_DECLS
 
-#endif /* MONGOC_ENABLE_SECURE_TRANSPORT */
+#endif /* MONGOC_ENABLE_SSL_SECURE_TRANSPORT */
 #endif /* MONGOC_STREAM_TLS_SECURE_TRANSPORT_PRIVATE_H */
 

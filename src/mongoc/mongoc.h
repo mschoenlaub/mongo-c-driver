@@ -40,6 +40,7 @@
 #include "mongoc-host-list.h"
 #include "mongoc-init.h"
 #include "mongoc-matcher.h"
+#include "mongoc-metadata.h"
 #include "mongoc-opcode.h"
 #include "mongoc-log.h"
 #include "mongoc-socket.h"
@@ -48,11 +49,12 @@
 #include "mongoc-stream-file.h"
 #include "mongoc-stream-gridfs.h"
 #include "mongoc-stream-socket.h"
+#include "mongoc-trace.h"
 #include "mongoc-uri.h"
 #include "mongoc-write-concern.h"
 #include "mongoc-version.h"
 #include "mongoc-version-functions.h"
-#ifdef MONGOC_ENABLE_OPENSSL
+#ifdef MONGOC_ENABLE_SSL
 #include "mongoc-rand.h"
 #include "mongoc-stream-tls.h"
 #include "mongoc-ssl.h"

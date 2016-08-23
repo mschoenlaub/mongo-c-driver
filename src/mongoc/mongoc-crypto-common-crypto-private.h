@@ -15,11 +15,11 @@
  */
 
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
-#ifdef MONGOC_ENABLE_COMMON_CRYPTO
+#ifdef MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO
 
 #ifndef MONGOC_CRYPTO_COMMON_CRYPTO_PRIVATE_H
 #define MONGOC_CRYPTO_COMMON_CRYPTO_PRIVATE_H
@@ -47,5 +47,5 @@ mongoc_crypto_common_crypto_sha1 (mongoc_crypto_t     *crypto,
 BSON_END_DECLS
 
 #endif /* MONGOC_CRYPTO_COMMON_CRYPTO_PRIVATE_H */
-#endif /* MONGOC_ENABLE_COMMON_CRYPTO */
+#endif /* MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO */
 

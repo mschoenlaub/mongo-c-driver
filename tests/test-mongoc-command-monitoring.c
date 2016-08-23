@@ -2,10 +2,14 @@
 #include <mongoc-collection-private.h>
 #include <mongoc-apm-private.h>
 #include <mongoc-host-list-private.h>
+#include <mongoc-cursor-private.h>
 
 #include "json-test.h"
 #include "test-conveniences.h"
 #include "test-libmongoc.h"
+#include "mock_server/mock-server.h"
+#include "mock_server/future.h"
+#include "mock_server/future-functions.h"
 
 
 typedef struct
@@ -81,6 +85,39 @@ check_server_version (const bson_t *test,
 }
 
 
+static bool
+check_topology_type (const bson_t *test)
+{
+   bson_iter_t iter;
+   bson_iter_t child;
+   bool is_mongos;
+   const char *s;
+
+   /* so far this field can only contain an array like ["sharded"],
+    * see https://github.com/mongodb/specifications/pull/75
+    */
+   if (bson_iter_init_find (&iter, test, "ignore_if_topology_type")) {
+      ASSERT (BSON_ITER_HOLDS_ARRAY (&iter));
+      ASSERT (bson_iter_recurse (&iter, &child));
+
+      is_mongos = test_framework_is_mongos ();
+
+      while (bson_iter_next (&child)) {
+         if (BSON_ITER_HOLDS_UTF8 (&child)) {
+            s = bson_iter_utf8 (&child, NULL);
+
+            /* skip test if topology type is sharded */
+            if (!strcmp (s, "sharded") && is_mongos) {
+               return false;
+            }
+         }
+      }
+   }
+
+   return true;
+}
+
+
 static void
 insert_data (mongoc_collection_t *collection,
              const bson_t        *test)
@@ -132,13 +169,14 @@ check_expectations (const bson_t *events,
    ctx.errmsg = errmsg;
    ctx.errmsg_len = sizeof errmsg;
 
-   if (!match_bson_with_ctx (events, expectations, false, &ctx)) {
-      MONGOC_ERROR ("command monitoring test failed expectations:\n\n"
-                    "%s\n\n"
-                    "events:\n%s\n\n%s\n",
-                    bson_as_json (expectations, NULL),
-                    bson_as_json (events, NULL),
-                    errmsg);
+   if (bson_count_keys (expectations) != bson_count_keys (events) ||
+       !match_bson_with_ctx (events, expectations, false, &ctx)) {
+      test_error ("command monitoring test failed expectations:\n\n"
+                  "%s\n\n"
+                  "events:\n%s\n\n%s\n",
+                  bson_as_json (expectations, NULL),
+                  bson_as_json (events, NULL),
+                  errmsg);
 
       abort ();
    }
@@ -312,7 +350,7 @@ started_cb (const mongoc_apm_command_started_t *event)
    }
 
    BSON_ASSERT (mongoc_apm_command_started_get_request_id (event) > 0);
-   BSON_ASSERT (mongoc_apm_command_started_get_hint (event) > 0);
+   BSON_ASSERT (mongoc_apm_command_started_get_server_id (event) > 0);
    assert_host_in_uri (event->host, context->test_framework_uri);
 
    /* subsequent events share the first event's operation id */
@@ -346,6 +384,7 @@ succeeded_cb (const mongoc_apm_command_succeeded_t *event)
 {
    context_t *context = (context_t *)
       mongoc_apm_command_succeeded_get_context (event);
+   int64_t operation_id;
    char *reply_json;
    bson_t reply = BSON_INITIALIZER;
    char str[16];
@@ -360,12 +399,57 @@ succeeded_cb (const mongoc_apm_command_succeeded_t *event)
    }
 
    BSON_ASSERT (mongoc_apm_command_succeeded_get_request_id (event) > 0);
-   BSON_ASSERT (mongoc_apm_command_succeeded_get_hint (event) > 0);
+   BSON_ASSERT (mongoc_apm_command_succeeded_get_server_id (event) > 0);
    assert_host_in_uri (event->host, context->test_framework_uri);
+
+   /* subsequent events share the first event's operation id */
+   operation_id = mongoc_apm_command_succeeded_get_operation_id (event);
+   ASSERT_CMPINT64 (operation_id, !=, (int64_t) 0);
+   ASSERT_CMPINT64 (context->operation_id, ==, operation_id);
 
    convert_command_for_test (context, event->reply, &reply, NULL);
    new_event = BCON_NEW ("command_succeeded_event", "{",
                          "reply", BCON_DOCUMENT (&reply),
+                         "command_name", BCON_UTF8 (event->command_name),
+                         "}");
+
+   bson_uint32_to_string (context->n_events, &key, str, sizeof str);
+   BSON_APPEND_DOCUMENT (&context->events, key, new_event);
+
+   context->n_events++;
+
+   bson_destroy (new_event);
+   bson_destroy (&reply);
+}
+
+
+static void
+failed_cb (const mongoc_apm_command_failed_t *event)
+{
+   context_t *context = (context_t *)
+      mongoc_apm_command_failed_get_context (event);
+   int64_t operation_id;
+   bson_t reply = BSON_INITIALIZER;
+   char str[16];
+   const char *key;
+   bson_t *new_event;
+
+   if (context->verbose) {
+      printf ("\t\t<-- %s FAILED: %s\n",
+              event->command_name, event->error->message);
+      fflush (stdout);
+   }
+
+   BSON_ASSERT (mongoc_apm_command_failed_get_request_id (event) > 0);
+   BSON_ASSERT (mongoc_apm_command_failed_get_server_id (event) > 0);
+   assert_host_in_uri (event->host, context->test_framework_uri);
+
+   /* subsequent events share the first event's operation id */
+   operation_id = mongoc_apm_command_failed_get_operation_id (event);
+   ASSERT_CMPINT64 (operation_id, !=, (int64_t) 0);
+   ASSERT_CMPINT64 (context->operation_id, ==, operation_id);
+
+   new_event = BCON_NEW ("command_failed_event", "{",
                          "command_name", BCON_UTF8 (event->command_name),
                          "}");
 
@@ -401,7 +485,7 @@ one_bulk_op (mongoc_bulk_operation_t *bulk,
       mongoc_bulk_operation_update_one (bulk, &filter, &update,
                                         false /* upsert */);
    } else {
-      MONGOC_ERROR ("unrecognized request name %s\n", request_name);
+      test_error ("unrecognized request name %s\n", request_name);
       abort ();
    }
 }
@@ -645,12 +729,13 @@ one_test (mongoc_collection_t *collection,
       fflush (stdout);
    }
 
-   if (!check_server_version (test, &context)) {
+   if (!check_server_version (test, &context) || !check_topology_type (test)) {
       goto done;
    }
 
    mongoc_apm_set_command_started_cb (callbacks, started_cb);
    mongoc_apm_set_command_succeeded_cb (callbacks, succeeded_cb);
+   mongoc_apm_set_command_failed_cb (callbacks, failed_cb);
    mongoc_client_set_apm_callbacks (collection->client, callbacks, &context);
 
    bson_lookup_doc (test, "operation", &operation);
@@ -680,7 +765,7 @@ one_test (mongoc_collection_t *collection,
    } else if (!strcmp (op_name, "updateOne")) {
       test_update_one (collection, &arguments);
    } else {
-      MONGOC_ERROR ("unrecognized operation name %s\n", op_name);
+      test_error ("unrecognized operation name %s\n", op_name);
       abort ();
    }
 
@@ -688,7 +773,6 @@ one_test (mongoc_collection_t *collection,
    check_expectations (&context.events, &expectations);
 
 done:
-   mongoc_client_set_apm_callbacks (collection->client, NULL, NULL);
    mongoc_apm_callbacks_destroy (callbacks);
    context_destroy (&context);
    mongoc_read_prefs_destroy (read_prefs);
@@ -721,21 +805,22 @@ test_command_monitoring_cb (bson_t *scenario)
    db_name = bson_lookup_utf8 (scenario, "database_name");
    collection_name = bson_lookup_utf8 (scenario, "collection_name");
 
-   client = test_framework_client_new ();
-   collection = mongoc_client_get_collection (client, db_name, collection_name);
-
    BSON_ASSERT (bson_iter_init_find (&iter, scenario, "tests"));
    BSON_ASSERT (BSON_ITER_HOLDS_ARRAY (&iter));
    bson_iter_recurse (&iter, &tests_iter);
 
    while (bson_iter_next (&tests_iter)) {
+      client = test_framework_client_new ();
+      collection = mongoc_client_get_collection (client,
+                                                 db_name,
+                                                 collection_name);
+
       insert_data (collection, scenario);
       bson_iter_bson (&tests_iter, &test_op);
       one_test (collection, &test_op);
+      mongoc_collection_destroy (collection);
+      mongoc_client_destroy (client);
    }
-
-   mongoc_collection_destroy (collection);
-   mongoc_client_destroy (client);
 }
 
 
@@ -756,8 +841,641 @@ test_all_spec_tests (TestSuite *suite)
    }
 }
 
+
+static void
+test_get_error_failed_cb (const mongoc_apm_command_failed_t *event)
+{
+   bson_error_t *error;
+
+   error = (bson_error_t *) mongoc_apm_command_failed_get_context (event);
+   mongoc_apm_command_failed_get_error (event, error);
+}
+
+
+static void
+test_get_error (void)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_apm_callbacks_t *callbacks;
+   future_t *future;
+   request_t *request;
+   bson_error_t error = { 0 };
+
+   server = mock_server_with_autoismaster (0);
+   mock_server_run (server);
+
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+   callbacks = mongoc_apm_callbacks_new ();
+   mongoc_apm_set_command_failed_cb (callbacks, test_get_error_failed_cb);
+   mongoc_client_set_apm_callbacks (client, callbacks, (void *) &error);
+   future = future_client_command_simple (client, "db",
+                                          tmp_bson ("{'foo': 1}"),
+                                          NULL, NULL, NULL);
+   request = mock_server_receives_command (server, "db", MONGOC_QUERY_SLAVE_OK,
+                                           "{'foo': 1}");
+   mock_server_replies_simple (request,
+                               "{'ok': 0, 'errmsg': 'foo', 'code': 42}");
+   ASSERT (!future_get_bool (future));
+   ASSERT_ERROR_CONTAINS (error, MONGOC_ERROR_QUERY, 42, "foo");
+
+   future_destroy (future);
+   request_destroy (request);
+   mongoc_apm_callbacks_destroy (callbacks);
+   mongoc_client_destroy (client);
+   mock_server_destroy (server);
+}
+
+
+static void
+test_set_callbacks_cb (const mongoc_apm_command_started_t *event)
+{
+   int *n_calls = (int *) mongoc_apm_command_started_get_context (event);
+
+   (*n_calls)++;
+}
+
+
+static void
+_test_set_callbacks (bool pooled)
+{
+   mongoc_client_t *client;
+   mongoc_client_pool_t *pool = NULL;
+   mongoc_apm_callbacks_t *callbacks;
+   int n_calls = 0;
+   bson_error_t error;
+   bson_t b;
+
+   callbacks = mongoc_apm_callbacks_new ();
+   mongoc_apm_set_command_started_cb (callbacks, test_set_callbacks_cb);
+
+   if (pooled) {
+      pool = test_framework_client_pool_new ();
+      ASSERT (mongoc_client_pool_set_apm_callbacks (pool, callbacks,
+                                                    (void *) &n_calls));
+      client = mongoc_client_pool_pop (pool);
+   } else {
+      client = test_framework_client_new ();
+      ASSERT (mongoc_client_set_apm_callbacks (client, callbacks,
+                                               (void *) &n_calls));
+   }
+
+   ASSERT_OR_PRINT (mongoc_client_get_server_status (client, NULL, &b, &error),
+                    error);
+   ASSERT_CMPINT (1, ==, n_calls);
+
+   capture_logs (true);
+
+   if (pooled) {
+      ASSERT (!mongoc_client_pool_set_apm_callbacks (pool, NULL,
+                                                     (void*) &n_calls));
+      ASSERT_CAPTURED_LOG ("mongoc_client_pool_set_apm_callbacks",
+                           MONGOC_LOG_LEVEL_ERROR,
+                           "Can only set callbacks once");
+
+      clear_captured_logs ();
+      ASSERT (!mongoc_client_set_apm_callbacks (client, NULL,
+                                                (void *) &n_calls));
+      ASSERT_CAPTURED_LOG ("mongoc_client_pool_set_apm_callbacks",
+                           MONGOC_LOG_LEVEL_ERROR,
+                           "Cannot set callbacks on a pooled client");
+   } else {
+      ASSERT (!mongoc_client_set_apm_callbacks (client, NULL,
+                                                (void *) &n_calls));
+      ASSERT_CAPTURED_LOG ("mongoc_client_set_apm_callbacks",
+                           MONGOC_LOG_LEVEL_ERROR,
+                           "Can only set callbacks once");
+   }
+
+   if (pooled) {
+      mongoc_client_pool_push (pool, client);
+      mongoc_client_pool_destroy (pool);
+   } else {
+      mongoc_client_destroy (client);
+   }
+
+   bson_destroy (&b);
+   mongoc_apm_callbacks_destroy (callbacks);
+}
+
+
+static void
+test_set_callbacks_single (void)
+{
+   _test_set_callbacks (false);
+}
+
+
+static void
+test_set_callbacks_pooled (void)
+{
+   _test_set_callbacks (true);
+}
+
+
+typedef struct {
+   int64_t request_id;
+   int64_t op_id;
+} ids_t;
+
+
+typedef struct
+{
+   mongoc_array_t started_ids;
+   mongoc_array_t succeeded_ids;
+   mongoc_array_t failed_ids;
+   int            started_calls;
+   int            succeeded_calls;
+   int            failed_calls;
+} op_id_test_t;
+
+
+static void
+op_id_test_init (op_id_test_t *test)
+{
+   _mongoc_array_init (&test->started_ids, sizeof (ids_t));
+   _mongoc_array_init (&test->succeeded_ids, sizeof (ids_t));
+   _mongoc_array_init (&test->failed_ids, sizeof (ids_t));
+
+   test->started_calls = 0;
+   test->succeeded_calls = 0;
+   test->failed_calls = 0;
+}
+
+
+static void
+op_id_test_cleanup (op_id_test_t *test)
+{
+   _mongoc_array_destroy (&test->started_ids);
+   _mongoc_array_destroy (&test->succeeded_ids);
+   _mongoc_array_destroy (&test->failed_ids);
+}
+
+
+static void
+test_op_id_started_cb (const mongoc_apm_command_started_t *event)
+{
+   op_id_test_t *test;
+   ids_t ids;
+
+   test = (op_id_test_t *) mongoc_apm_command_started_get_context (event);
+   ids.request_id = mongoc_apm_command_started_get_request_id (event);
+   ids.op_id = mongoc_apm_command_started_get_operation_id (event);
+
+   _mongoc_array_append_val (&test->started_ids, ids);
+
+   test->started_calls++;
+}
+
+
+static void
+test_op_id_succeeded_cb (const mongoc_apm_command_succeeded_t *event)
+{
+   op_id_test_t *test;
+   ids_t ids;
+
+   test = (op_id_test_t *) mongoc_apm_command_succeeded_get_context (event);
+   ids.request_id = mongoc_apm_command_succeeded_get_request_id (event);
+   ids.op_id = mongoc_apm_command_succeeded_get_operation_id (event);
+
+   _mongoc_array_append_val (&test->succeeded_ids, ids);
+
+   test->succeeded_calls++;
+}
+
+
+static void
+test_op_id_failed_cb (const mongoc_apm_command_failed_t *event)
+{
+   op_id_test_t *test;
+   ids_t ids;
+
+   test = (op_id_test_t *) mongoc_apm_command_failed_get_context (event);
+   ids.request_id = mongoc_apm_command_failed_get_request_id (event);
+   ids.op_id = mongoc_apm_command_failed_get_operation_id (event);
+
+   _mongoc_array_append_val (&test->failed_ids, ids);
+
+   test->failed_calls++;
+}
+
+
+#define REQUEST_ID(_event_type, _index) \
+    _mongoc_array_index (&test._event_type ## _ids, ids_t, _index).request_id
+
+#define OP_ID(_event_type, _index) \
+    _mongoc_array_index (&test._event_type ## _ids, ids_t, _index).op_id
+
+static void
+_test_bulk_operation_id (bool pooled)
+{
+   mongoc_client_t *client;
+   mongoc_client_pool_t *pool = NULL;
+   mongoc_apm_callbacks_t *callbacks;
+   mongoc_collection_t *collection;
+   mongoc_bulk_operation_t *bulk;
+   bson_error_t error;
+   op_id_test_t test;
+   int64_t op_id;
+
+   op_id_test_init (&test);
+
+   callbacks = mongoc_apm_callbacks_new ();
+   mongoc_apm_set_command_started_cb (callbacks, test_op_id_started_cb);
+   mongoc_apm_set_command_succeeded_cb (callbacks, test_op_id_succeeded_cb);
+   mongoc_apm_set_command_failed_cb (callbacks, test_op_id_failed_cb);
+
+   if (pooled) {
+      pool = test_framework_client_pool_new ();
+      ASSERT (mongoc_client_pool_set_apm_callbacks (pool, callbacks,
+                                                    (void *) &test));
+      client = mongoc_client_pool_pop (pool);
+   } else {
+      client = test_framework_client_new ();
+      ASSERT (mongoc_client_set_apm_callbacks (client, callbacks,
+                                               (void *) &test));
+   }
+
+   collection = get_test_collection (client, "test_bulk_operation_id");
+   bulk = mongoc_collection_create_bulk_operation (collection, false, NULL);
+   mongoc_bulk_operation_insert (bulk, tmp_bson ("{'_id': 1}"));
+   mongoc_bulk_operation_update_one (bulk, tmp_bson ("{'_id': 1}"),
+                                     tmp_bson ("{'$set': {'x': 1}}"), false);
+   mongoc_bulk_operation_remove (bulk, tmp_bson ("{}"));
+
+   /* write errors don't trigger failed events, so we only test success */
+   ASSERT_OR_PRINT (mongoc_bulk_operation_execute (bulk, NULL, &error), error);
+   ASSERT_CMPINT (test.started_calls, ==, 3);
+   ASSERT_CMPINT (test.succeeded_calls, ==, 3);
+
+   ASSERT_CMPINT64 (REQUEST_ID (started, 0), ==, REQUEST_ID (succeeded, 0));
+   ASSERT_CMPINT64 (REQUEST_ID (started, 1), ==, REQUEST_ID (succeeded, 1));
+   ASSERT_CMPINT64 (REQUEST_ID (started, 2), ==, REQUEST_ID (succeeded, 2));
+
+   /* 3 unique request ids */
+   ASSERT_CMPINT64 (REQUEST_ID (started, 0), !=, REQUEST_ID (started, 1));
+   ASSERT_CMPINT64 (REQUEST_ID (started, 0), !=, REQUEST_ID (started, 2));
+   ASSERT_CMPINT64 (REQUEST_ID (started, 1), !=, REQUEST_ID (started, 2));
+   ASSERT_CMPINT64 (REQUEST_ID (succeeded, 0), !=, REQUEST_ID (succeeded, 1));
+   ASSERT_CMPINT64 (REQUEST_ID (succeeded, 0), !=, REQUEST_ID (succeeded, 2));
+   ASSERT_CMPINT64 (REQUEST_ID (succeeded, 1), !=, REQUEST_ID (succeeded, 2));
+
+   /* operation ids all the same */
+   op_id = OP_ID (started, 0);
+   ASSERT_CMPINT64 (op_id, !=, (int64_t) 0);
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (started, 1));
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (started, 2));
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (succeeded, 0));
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (succeeded, 1));
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (succeeded, 2));
+
+   mongoc_bulk_operation_destroy (bulk);
+   mongoc_collection_destroy (collection);
+
+   if (pooled) {
+      mongoc_client_pool_push (pool, client);
+      mongoc_client_pool_destroy (pool);
+   } else {
+      mongoc_client_destroy (client);
+   }
+
+   op_id_test_cleanup (&test);
+   mongoc_apm_callbacks_destroy (callbacks);
+}
+
+
+static void
+test_bulk_operation_id_single (void)
+{
+   _test_bulk_operation_id (false);
+}
+
+
+static void
+test_bulk_operation_id_pooled (void)
+{
+   _test_bulk_operation_id (true);
+}
+
+
+static void
+_test_query_operation_id (bool pooled, bool use_cmd)
+{
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_client_pool_t *pool = NULL;
+   mongoc_apm_callbacks_t *callbacks;
+   mongoc_collection_t *collection;
+   op_id_test_t test;
+   mongoc_cursor_t *cursor;
+   const bson_t *doc;
+   future_t *future;
+   request_t *request;
+   int64_t op_id;
+
+   op_id_test_init (&test);
+
+   server = mock_server_with_autoismaster (use_cmd ? 4 : 0);
+   mock_server_run (server);
+
+   callbacks = mongoc_apm_callbacks_new ();
+   mongoc_apm_set_command_started_cb (callbacks, test_op_id_started_cb);
+   mongoc_apm_set_command_succeeded_cb (callbacks, test_op_id_succeeded_cb);
+   mongoc_apm_set_command_failed_cb (callbacks, test_op_id_failed_cb);
+
+   if (pooled) {
+      pool = mongoc_client_pool_new (mock_server_get_uri (server));
+      ASSERT (mongoc_client_pool_set_apm_callbacks (pool, callbacks,
+                                                    (void *) &test));
+      client = mongoc_client_pool_pop (pool);
+   } else {
+      client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+      ASSERT (mongoc_client_set_apm_callbacks (client, callbacks,
+                                               (void *) &test));
+   }
+
+   collection = mongoc_client_get_collection (client, "db", "collection");
+   cursor = mongoc_collection_find (collection, MONGOC_QUERY_NONE, 0, 0, 1,
+                                    tmp_bson ("{}"), NULL, NULL);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_request (server);
+   mock_server_replies_to_find (request, MONGOC_QUERY_SLAVE_OK,
+                                123 /* cursor id */, 1, "db.collection", "{}",
+                                use_cmd);
+
+   ASSERT (future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+
+   ASSERT_CMPINT (test.started_calls, ==, 1);
+   ASSERT_CMPINT (test.succeeded_calls, ==, 1);
+
+   future = future_cursor_next (cursor, &doc);
+   request = mock_server_receives_request (server);
+   if (use_cmd) {
+      mock_server_replies_simple (request, 
+                                  "{'ok': 0, 'code': 42, 'errmsg': 'bad!'}");
+   } else {
+      mock_server_replies (request, MONGOC_REPLY_QUERY_FAILURE, 123, 0, 0,
+                           "{'$err': 'uh oh', 'code': 4321}");
+   }
+
+   ASSERT (!future_get_bool (future));
+   future_destroy (future);
+   request_destroy (request);
+
+   ASSERT_CMPINT (test.started_calls, ==, 2);
+   ASSERT_CMPINT (test.succeeded_calls, ==, 1);
+   ASSERT_CMPINT (test.failed_calls, ==, 1);
+
+   ASSERT_CMPINT64 (REQUEST_ID (started, 0), ==, REQUEST_ID (succeeded, 0));
+   ASSERT_CMPINT64 (REQUEST_ID (started, 1), ==, REQUEST_ID (failed, 0));
+
+   /* unique request ids */
+   ASSERT_CMPINT64 (REQUEST_ID (started, 0), !=, REQUEST_ID (started, 1));
+
+   /* operation ids all the same */
+   op_id = OP_ID (started, 0);
+   ASSERT_CMPINT64 (op_id, !=, (int64_t) 0);
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (started, 1));
+   ASSERT_CMPINT64 (op_id, ==, OP_ID (failed, 0));
+
+   mock_server_destroy (server);
+
+   /* client logs warning because it can't send killCursors */
+   capture_logs (true);
+   mongoc_cursor_destroy (cursor);
+   mongoc_collection_destroy (collection);
+
+   if (pooled) {
+      mongoc_client_pool_push (pool, client);
+      mongoc_client_pool_destroy (pool);
+   } else {
+      mongoc_client_destroy (client);
+   }
+
+   op_id_test_cleanup (&test);
+   mongoc_apm_callbacks_destroy (callbacks);
+}
+
+
+static void
+test_query_operation_id_single_cmd (void)
+{
+   _test_query_operation_id (false, true);
+}
+
+
+static void
+test_query_operation_id_pooled_cmd (void)
+{
+   _test_query_operation_id (true, true);
+}
+
+
+static void
+test_query_operation_id_single_op_query (void)
+{
+   _test_query_operation_id (false, false);
+}
+
+
+static void
+test_query_operation_id_pooled_op_query (void)
+{
+   _test_query_operation_id (true, false);
+}
+
+
+typedef struct {
+   int     started_calls;
+   int     succeeded_calls;
+   int     failed_calls;
+   char    db[100];
+   char    cmd_name[100];
+   bson_t  cmd;
+} cmd_test_t;
+
+
+static void
+cmd_test_init (cmd_test_t *test)
+{
+   memset (test, 0, sizeof *test);
+   bson_init (&test->cmd);
+}
+
+
+static void
+cmd_test_cleanup (cmd_test_t *test)
+{
+   bson_destroy (&test->cmd);
+}
+
+
+static void
+cmd_started_cb (const mongoc_apm_command_started_t *event)
+{
+   cmd_test_t *test;
+
+   test = (cmd_test_t *) mongoc_apm_command_started_get_context (event);
+   test->started_calls++;
+   bson_destroy (&test->cmd);
+   bson_strncpy (test->db,
+                 mongoc_apm_command_started_get_database_name (event),
+                 sizeof (test->db));
+   bson_copy_to (mongoc_apm_command_started_get_command (event), &test->cmd);
+   bson_strncpy (test->cmd_name,
+                 mongoc_apm_command_started_get_command_name (event),
+                 sizeof (test->cmd_name));
+}
+
+
+static void
+cmd_succeeded_cb (const mongoc_apm_command_succeeded_t *event)
+{
+   cmd_test_t *test;
+
+   test = (cmd_test_t *) mongoc_apm_command_succeeded_get_context (event);
+   test->succeeded_calls++;
+   ASSERT_CMPSTR (test->cmd_name,
+                  mongoc_apm_command_succeeded_get_command_name (event));
+}
+
+
+static void
+cmd_failed_cb (const mongoc_apm_command_failed_t *event)
+{
+   cmd_test_t *test;
+
+   test = (cmd_test_t *) mongoc_apm_command_failed_get_context (event);
+   test->failed_calls++;
+   ASSERT_CMPSTR (test->cmd_name,
+                  mongoc_apm_command_failed_get_command_name (event));
+}
+
+
+static void
+set_cmd_test_callbacks (mongoc_client_t *client,
+                        void            *context)
+{
+   mongoc_apm_callbacks_t *callbacks;
+
+   callbacks = mongoc_apm_callbacks_new ();
+   mongoc_apm_set_command_started_cb (callbacks, cmd_started_cb);
+   mongoc_apm_set_command_succeeded_cb (callbacks, cmd_succeeded_cb);
+   mongoc_apm_set_command_failed_cb (callbacks, cmd_failed_cb);
+   mongoc_client_set_apm_callbacks (client, callbacks, context);
+   mongoc_apm_callbacks_destroy (callbacks);
+}
+
+
+static void
+test_client_cmd (void)
+{
+   cmd_test_t test;
+   mongoc_client_t *client;
+   mongoc_cursor_t *cursor;
+   const bson_t *reply;
+
+   cmd_test_init (&test);
+   client = test_framework_client_new ();
+   set_cmd_test_callbacks (client, (void *) &test);
+   cursor = mongoc_client_command (client, "admin", MONGOC_QUERY_SLAVE_OK, 0, 0,
+                                   0, tmp_bson ("{'ismaster': 1}"), NULL, NULL);
+
+   ASSERT (mongoc_cursor_next (cursor, &reply));
+   ASSERT_CMPSTR (test.cmd_name, "ismaster");
+   ASSERT_MATCH (&test.cmd, "{'ismaster': 1}");
+   ASSERT_CMPSTR (test.db, "admin");
+   ASSERT_CMPINT (1, ==, test.started_calls);
+   ASSERT_CMPINT (1, ==, test.succeeded_calls);
+   ASSERT_CMPINT (0, ==, test.failed_calls);
+
+   cmd_test_cleanup (&test);
+   mongoc_cursor_destroy (cursor);
+
+   cmd_test_init (&test);
+   cursor = mongoc_client_command (client, "admin", MONGOC_QUERY_SLAVE_OK, 0, 0,
+                                   0, tmp_bson ("{'foo': 1}"), NULL, NULL);
+
+   ASSERT (!mongoc_cursor_next (cursor, &reply));
+   ASSERT_CMPSTR (test.cmd_name, "foo");
+   ASSERT_MATCH (&test.cmd, "{'foo': 1}");
+   ASSERT_CMPSTR (test.db, "admin");
+   ASSERT_CMPINT (1, ==, test.started_calls);
+   ASSERT_CMPINT (0, ==, test.succeeded_calls);
+   ASSERT_CMPINT (1, ==, test.failed_calls);
+
+   cmd_test_cleanup (&test);
+   mongoc_cursor_destroy (cursor);
+   mongoc_client_destroy (client);
+}
+
+
+static void
+test_client_cmd_simple (void)
+{
+   cmd_test_t test;
+   mongoc_client_t *client;
+   bool r;
+   bson_error_t error;
+
+   cmd_test_init (&test);
+   client = test_framework_client_new ();
+   set_cmd_test_callbacks (client, (void *) &test);
+   r = mongoc_client_command_simple (
+      client, "admin", tmp_bson ("{'ismaster': 1}"), NULL, NULL, &error);
+
+   ASSERT_OR_PRINT (r, error);
+   ASSERT_CMPSTR (test.cmd_name, "ismaster");
+   ASSERT_MATCH (&test.cmd, "{'ismaster': 1}");
+   ASSERT_CMPSTR (test.db, "admin");
+   ASSERT_CMPINT (1, ==, test.started_calls);
+   ASSERT_CMPINT (1, ==, test.succeeded_calls);
+   ASSERT_CMPINT (0, ==, test.failed_calls);
+
+   cmd_test_cleanup (&test);
+   cmd_test_init (&test);
+   r = mongoc_client_command_simple (
+      client, "admin", tmp_bson ("{'foo': 1}"), NULL, NULL, &error);
+
+   ASSERT (!r);
+   ASSERT_CMPSTR (test.cmd_name, "foo");
+   ASSERT_MATCH (&test.cmd, "{'foo': 1}");
+   ASSERT_CMPSTR (test.db, "admin");
+   ASSERT_CMPINT (1, ==, test.started_calls);
+   ASSERT_CMPINT (0, ==, test.succeeded_calls);
+   ASSERT_CMPINT (1, ==, test.failed_calls);
+
+   mongoc_client_destroy (client);
+   cmd_test_cleanup (&test);
+}
+
+
 void
 test_command_monitoring_install (TestSuite *suite)
 {
    test_all_spec_tests (suite);
+   TestSuite_Add (suite, "/command_monitoring/get_error", test_get_error);
+   TestSuite_AddLive (suite, "/command_monitoring/set_callbacks/single",
+                  test_set_callbacks_single);
+   TestSuite_AddLive (suite, "/command_monitoring/set_callbacks/pooled",
+                  test_set_callbacks_pooled);
+   TestSuite_AddLive (suite, "/command_monitoring/operation_id/bulk/single",
+                  test_bulk_operation_id_single);
+   TestSuite_AddLive (suite, "/command_monitoring/operation_id/bulk/pooled",
+                  test_bulk_operation_id_pooled);
+   TestSuite_Add (suite, "/command_monitoring/operation_id/query/single/cmd",
+                  test_query_operation_id_single_cmd);
+   TestSuite_Add (suite, "/command_monitoring/operation_id/query/pooled/cmd",
+                  test_query_operation_id_pooled_cmd);
+   TestSuite_Add (suite, "/command_monitoring/operation_id/query/single/op_query",
+                  test_query_operation_id_single_op_query);
+   TestSuite_Add (suite, "/command_monitoring/operation_id/query/pooled/op_query",
+                  test_query_operation_id_pooled_op_query);
+   TestSuite_AddLive (suite, "/command_monitoring/client_cmd",
+                  test_client_cmd);
+   TestSuite_AddLive (suite, "/command_monitoring/client_cmd_simple",
+                  test_client_cmd_simple);
 }

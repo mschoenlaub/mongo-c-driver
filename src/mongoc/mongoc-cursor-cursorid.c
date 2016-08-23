@@ -36,10 +36,10 @@ _mongoc_cursor_cursorid_new (void)
 
    ENTRY;
 
-   cid = (mongoc_cursor_cursorid_t *)bson_malloc0 (sizeof *cid);
+   cid = (mongoc_cursor_cursorid_t *) bson_malloc0 (sizeof *cid);
+   bson_init (&cid->array);
    cid->in_batch = false;
    cid->in_reader = false;
-   bson_init (&cid->array);
 
    RETURN (cid);
 }
@@ -63,35 +63,33 @@ _mongoc_cursor_cursorid_destroy (mongoc_cursor_t *cursor)
 }
 
 
-static bool
-_mongoc_cursor_cursorid_refresh_from_command (mongoc_cursor_t *cursor,
-                                              const bson_t    *command)
+/*
+ * Start iterating the reply to an "aggregate", "find", "getMore" etc. command:
+ *
+ *    {cursor: {id: 1234, ns: "db.collection", firstBatch: [...]}}
+ */
+bool
+_mongoc_cursor_cursorid_start_batch (mongoc_cursor_t *cursor)
 {
    mongoc_cursor_cursorid_t *cid;
-   bson_iter_t iter, child;
+   bson_iter_t iter;
+   bson_iter_t child;
    const char *ns;
-
-   ENTRY;
+   uint32_t nslen;
 
    cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
+
    BSON_ASSERT (cid);
 
-   /* run_command will initialize cid->array */
-   bson_destroy (&cid->array);
-
-   /* server replies to find / aggregate with {cursor: {id: N, firstBatch: []}},
-    * to getMore command with {cursor: {id: N, nextBatch: []}}. */
-   if (_mongoc_cursor_run_command (cursor, command, &cid->array) &&
-       bson_iter_init_find (&iter, &cid->array, "cursor") &&
+   if (bson_iter_init_find (&iter, &cid->array, "cursor") &&
        BSON_ITER_HOLDS_DOCUMENT (&iter) &&
        bson_iter_recurse (&iter, &child)) {
-
       while (bson_iter_next (&child)) {
          if (BSON_ITER_IS_KEY (&child, "id")) {
             cursor->rpc.reply.cursor_id = bson_iter_as_int64 (&child);
          } else if (BSON_ITER_IS_KEY (&child, "ns")) {
-            ns = bson_iter_utf8 (&child, &cursor->nslen);
-            bson_strncpy (cursor->ns, ns, sizeof cursor->ns);
+            ns = bson_iter_utf8 (&child, &nslen);
+            _mongoc_set_cursor_ns (cursor, ns, nslen);
          } else if (BSON_ITER_IS_KEY (&child, "firstBatch") ||
                     BSON_ITER_IS_KEY (&child, "nextBatch")) {
             if (BSON_ITER_HOLDS_ARRAY (&child) &&
@@ -100,6 +98,29 @@ _mongoc_cursor_cursorid_refresh_from_command (mongoc_cursor_t *cursor,
             }
          }
       }
+   }
+
+   return cid->in_batch;
+}
+
+
+static bool
+_mongoc_cursor_cursorid_refresh_from_command (mongoc_cursor_t *cursor,
+                                              const bson_t    *command)
+{
+   mongoc_cursor_cursorid_t *cid;
+
+   ENTRY;
+
+   cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
+   BSON_ASSERT (cid);
+
+   bson_destroy (&cid->array);
+
+   /* server replies to find / aggregate with {cursor: {id: N, firstBatch: []}},
+    * to getMore command with {cursor: {id: N, nextBatch: []}}. */
+   if (_mongoc_cursor_run_command (cursor, command, &cid->array) &&
+       _mongoc_cursor_cursorid_start_batch (cursor)) {
 
       RETURN (true);
    } else {
@@ -165,7 +186,7 @@ _mongoc_cursor_prepare_getmore_command (mongoc_cursor_t *cursor,
    bson_append_utf8 (command, "collection", 10, collection, collection_len);
 
    if (cursor->batch_size) {
-      bson_append_int64 (command, "batchSize", 9, cursor->batch_size);
+      bson_append_int64 (command, "batchSize", 9, _mongoc_n_return (cursor));
    }
 
    /* Find, getMore And killCursors Commands Spec: "In the case of a tailable
@@ -277,7 +298,8 @@ again:
    }
 
 done:
-   RETURN (*bson ? true : false);
+   cursor->done = *bson ? false : true;
+   RETURN (!cursor->done);
 }
 
 
@@ -318,4 +340,28 @@ _mongoc_cursor_cursorid_init (mongoc_cursor_t *cursor,
            sizeof (mongoc_cursor_interface_t));
 
    EXIT;
+}
+
+void
+_mongoc_cursor_cursorid_init_with_reply (mongoc_cursor_t *cursor,
+                                         bson_t          *reply,
+                                         uint32_t         server_id)
+{
+   mongoc_cursor_cursorid_t *cid;
+
+   cursor->sent = true;
+   cursor->server_id = server_id;
+
+   cid = (mongoc_cursor_cursorid_t *)cursor->iface_data;
+   BSON_ASSERT (cid);
+
+   bson_destroy (&cid->array);
+   bson_steal (&cid->array, reply);
+
+   if (!_mongoc_cursor_cursorid_start_batch (cursor)) {
+      bson_set_error (&cursor->error,
+                      MONGOC_ERROR_CURSOR,
+                      MONGOC_ERROR_CURSOR_INVALID_CURSOR,
+                      "Couldn't parse cursor document");
+   }
 }

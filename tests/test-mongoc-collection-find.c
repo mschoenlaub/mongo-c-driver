@@ -830,7 +830,7 @@ test_getmore_batch_size (void)
 
 
 static void
-test_getmore_invalid_reply (void)
+test_getmore_invalid_reply (void *ctx)
 {
    mock_server_t *server;
    mongoc_client_t *client;
@@ -936,6 +936,8 @@ test_getmore_await (void)
          NULL,
          NULL);
 
+      ASSERT (mongoc_cursor_is_alive (cursor));
+
       ASSERT_CMPINT (0, ==, mongoc_cursor_get_max_await_time_ms (cursor));
       mongoc_cursor_set_max_await_time_ms (cursor, 123);
       future = future_cursor_next (cursor, &doc);
@@ -954,6 +956,7 @@ test_getmore_await (void)
 
       /* no result or error */
       ASSERT (future_get_bool (future));
+      ASSERT (mongoc_cursor_is_alive (cursor));
 
       future_destroy (future);
       request_destroy (request);
@@ -986,6 +989,8 @@ test_getmore_await (void)
       /* no result or error */
       ASSERT (!future_get_bool (future));
       ASSERT (!mongoc_cursor_error (cursor, NULL));
+      ASSERT (!mongoc_cursor_is_alive (cursor));
+      ASSERT (!doc);
 
       future_destroy (future);
       request_destroy (request);
@@ -1011,7 +1016,9 @@ _test_tailable_timeout (bool pooled)
    mongoc_cursor_t *cursor;
    const bson_t *doc;
    bson_t reply;
-   
+
+   capture_logs (true);
+
    if (pooled) {
       pool = test_framework_client_pool_new ();
       client = mongoc_client_pool_pop (pool);
@@ -1038,7 +1045,6 @@ _test_tailable_timeout (bool pooled)
    ASSERT_OR_PRINT (r, error);
 
    client->cluster.sockettimeoutms = 100;
-   suppress_one_message ();
    cursor = mongoc_collection_find (
       collection, MONGOC_QUERY_TAILABLE_CURSOR | MONGOC_QUERY_AWAIT_DATA,
       0, 0, 0, tmp_bson ("{'a': 1}"), NULL, NULL);
@@ -1074,68 +1080,74 @@ test_tailable_timeout_single (void)
 }
 
 
+#ifndef MONGOC_ENABLE_SSL_SECURE_TRANSPORT
 static void
 test_tailable_timeout_pooled (void)
 {
    _test_tailable_timeout (true);
 }
+#endif
 
 
 void
 test_collection_find_install (TestSuite *suite)
 {
-   TestSuite_Add (suite, "/Collection/find/dollar_query",
-                  test_dollar_query);
-   TestSuite_Add (suite, "/Collection/find/dollar_or",
-                  test_dollar_or);
-   TestSuite_Add (suite, "/Collection/find/key_named_filter",
-                  test_key_named_filter);
-   TestSuite_Add (suite, "/Collection/find/cmd/subdoc_named_filter",
-                  test_find_cmd_subdoc_named_filter);
-   TestSuite_Add (suite, "/Collection/find/query/subdoc_named_filter",
-                  test_op_query_subdoc_named_filter);
-   TestSuite_Add (suite, "/Collection/find/newoption",
-                  test_newoption);
-   TestSuite_Add (suite, "/Collection/find/cmd/subdoc_named_filter_with_option",
-                  test_find_cmd_subdoc_named_filter_with_option);
-   TestSuite_Add (suite, "/Collection/find/orderby",
-                  test_orderby);
-   TestSuite_Add (suite, "/Collection/find/fields",
-                  test_fields);
-   TestSuite_Add (suite, "/Collection/find/modifiers/integer",
-                  test_int_modifiers);
-   TestSuite_Add (suite, "/Collection/find/modifiers/index_spec",
-                  test_index_spec_modifiers);
-   TestSuite_Add (suite, "/Collection/find/comment",
-                  test_comment);
-   TestSuite_Add (suite, "/Collection/find/max",
-                  test_max);
-   TestSuite_Add (suite, "/Collection/find/modifiers/bool",
-                  test_snapshot);
-   TestSuite_Add (suite, "/Collection/find/showdiskloc",
-                  test_diskloc);
-   TestSuite_Add (suite, "/Collection/find/returnkey",
-                  test_returnkey);
-   TestSuite_Add (suite, "/Collection/find/skip",
-                  test_skip);
-   TestSuite_Add (suite, "/Collection/find/batch_size",
-                  test_batch_size);
-   TestSuite_Add (suite, "/Collection/find/limit",
-                  test_limit);
-   TestSuite_Add (suite, "/Collection/find/negative_limit",
-                  test_negative_limit);
+   TestSuite_AddLive (suite, "/Collection/find/dollar_query",
+                      test_dollar_query);
+   TestSuite_AddLive (suite, "/Collection/find/dollar_or",
+                      test_dollar_or);
+   TestSuite_AddLive (suite, "/Collection/find/key_named_filter",
+                      test_key_named_filter);
+   TestSuite_AddLive (suite, "/Collection/find/cmd/subdoc_named_filter",
+                      test_find_cmd_subdoc_named_filter);
+   TestSuite_AddLive  (suite, "/Collection/find/query/subdoc_named_filter",
+                      test_op_query_subdoc_named_filter);
+   TestSuite_AddLive  (suite, "/Collection/find/newoption",
+                      test_newoption);
+   TestSuite_AddLive  (suite, "/Collection/find/cmd/subdoc_named_filter_with_option",
+                      test_find_cmd_subdoc_named_filter_with_option);
+   TestSuite_AddLive  (suite, "/Collection/find/orderby",
+                      test_orderby);
+   TestSuite_AddLive  (suite, "/Collection/find/fields",
+                      test_fields);
+   TestSuite_AddLive  (suite, "/Collection/find/modifiers/integer",
+                      test_int_modifiers);
+   TestSuite_AddLive  (suite, "/Collection/find/modifiers/index_spec",
+                      test_index_spec_modifiers);
+   TestSuite_AddLive  (suite, "/Collection/find/comment",
+                      test_comment);
+   TestSuite_AddLive  (suite, "/Collection/find/max",
+                      test_max);
+   TestSuite_AddLive  (suite, "/Collection/find/modifiers/bool",
+                      test_snapshot);
+   TestSuite_AddLive  (suite, "/Collection/find/showdiskloc",
+                      test_diskloc);
+   TestSuite_AddLive  (suite, "/Collection/find/returnkey",
+                      test_returnkey);
+   TestSuite_AddLive  (suite, "/Collection/find/skip",
+                      test_skip);
+   TestSuite_AddLive  (suite, "/Collection/find/batch_size",
+                      test_batch_size);
+   TestSuite_AddLive  (suite, "/Collection/find/limit",
+                      test_limit);
+   TestSuite_AddLive  (suite, "/Collection/find/negative_limit",
+                      test_negative_limit);
    TestSuite_Add (suite, "/Collection/find/unrecognized",
                   test_unrecognized_dollar_option);
-   TestSuite_Add (suite, "/Collection/find/flags",
-                  test_query_flags);
-   TestSuite_Add (suite, "/Collection/getmore/batch_size",
-                  test_getmore_batch_size);
-   TestSuite_Add (suite, "/Collection/getmore/invalid_reply",
-                  test_getmore_invalid_reply);
+   TestSuite_AddLive  (suite, "/Collection/find/flags",
+                      test_query_flags);
+   TestSuite_AddLive  (suite, "/Collection/getmore/batch_size",
+                      test_getmore_batch_size);
+   TestSuite_AddFull (suite, "/Collection/getmore/invalid_reply",
+                      test_getmore_invalid_reply, NULL, NULL, test_framework_skip_if_slow);
    TestSuite_Add (suite, "/Collection/getmore/await",
                   test_getmore_await);
-   TestSuite_Add (suite, "/Collection/tailable/timeout/single",
-                  test_tailable_timeout_single);
-   TestSuite_Add (suite, "/Collection/tailable/timeout/pooled",
-                  test_tailable_timeout_pooled);
+   TestSuite_AddLive (suite, "/Collection/tailable/timeout/single",
+                      test_tailable_timeout_single);
+#ifndef MONGOC_ENABLE_SSL_SECURE_TRANSPORT
+#ifndef MONGOC_ENABLE_SSL_SECURE_CHANNEL
+   TestSuite_AddLive (suite, "/Collection/tailable/timeout/pooled",
+                      test_tailable_timeout_pooled);
+#endif
+#endif
 }

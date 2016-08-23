@@ -17,7 +17,7 @@
 #ifndef MONGOC_CURSOR_PRIVATE_H
 #define MONGOC_CURSOR_PRIVATE_H
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
@@ -52,8 +52,7 @@ struct _mongoc_cursor_t
 {
    mongoc_client_t           *client;
 
-   uint32_t                   hint;
-   uint32_t                   stamp;
+   uint32_t                   server_id;
 
    unsigned                   is_command      : 1;
    unsigned                   sent            : 1;
@@ -68,9 +67,11 @@ struct _mongoc_cursor_t
    mongoc_read_concern_t     *read_concern;
    mongoc_read_prefs_t       *read_prefs;
 
+   mongoc_write_concern_t    *write_concern;
+
    mongoc_query_flags_t       flags;
    uint32_t                   skip;
-   int32_t                    limit;
+   int64_t                    limit;
    uint32_t                   count;
    uint32_t                   batch_size;
    uint32_t                   max_await_time_ms;
@@ -94,6 +95,10 @@ struct _mongoc_cursor_t
 };
 
 
+int32_t                   _mongoc_n_return            (mongoc_cursor_t              *cursor);
+void                      _mongoc_set_cursor_ns       (mongoc_cursor_t              *cursor,
+                                                       const char                   *ns,
+                                                       uint32_t                      nslen);
 mongoc_cursor_t         * _mongoc_cursor_new          (mongoc_client_t              *client,
                                                        const char                   *db_and_collection,
                                                        mongoc_query_flags_t          flags,

@@ -16,7 +16,7 @@
 
 #include "mongoc-config.h"
 
-#ifdef MONGOC_ENABLE_OPENSSL
+#ifdef MONGOC_ENABLE_SSL_OPENSSL
 
 #include <bson.h>
 #include <limits.h>
@@ -36,10 +36,16 @@
 #include "mongoc-thread-private.h"
 #include "mongoc-util-private.h"
 
+#ifdef _WIN32
+#include <wincrypt.h>
+#endif
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static mongoc_mutex_t * gMongocOpenSslThreadLocks;
 
 static void _mongoc_openssl_thread_startup(void);
 static void _mongoc_openssl_thread_cleanup(void);
+#endif
 
 /**
  * _mongoc_openssl_init:
@@ -58,7 +64,9 @@ _mongoc_openssl_init (void)
    SSL_load_error_strings ();
    ERR_load_BIO_strings ();
    OpenSSL_add_all_algorithms ();
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
    _mongoc_openssl_thread_startup ();
+#endif
 
    /*
     * Ensure we also load the ciphers now from the primary thread
@@ -76,7 +84,9 @@ _mongoc_openssl_init (void)
 void
 _mongoc_openssl_cleanup (void)
 {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
    _mongoc_openssl_thread_cleanup ();
+#endif
 }
 
 static int
@@ -96,6 +106,58 @@ _mongoc_openssl_password_cb (char *buf,
    return pass_len;
 }
 
+#ifdef _WIN32
+bool
+_mongoc_openssl_import_cert_store (LPWSTR store_name, DWORD dwFlags, X509_STORE* openssl_store)
+{
+   PCCERT_CONTEXT cert = NULL;
+   HCERTSTORE cert_store;
+
+   cert_store = CertOpenStore (CERT_STORE_PROV_SYSTEM,                       /* provider */
+                               X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,      /* certificate encoding */
+                               0,                                            /* unused */
+                               dwFlags,                                      /* dwFlags */
+                               store_name);                                  /* system store name. "My" or "Root" */
+
+   if (cert_store == NULL) {
+      MONGOC_WARNING ("error opening system CA store");
+      return false;
+   }
+
+   while ((cert = CertEnumCertificatesInStore (cert_store, cert)) != NULL) {
+      X509* x509Obj = d2i_X509 (NULL, &cert->pbCertEncoded, cert->cbCertEncoded);
+
+      if (x509Obj == NULL) {
+         MONGOC_WARNING ("Error parsing X509 object from Windows certificate store");
+         continue;
+      }
+
+      X509_STORE_add_cert (openssl_store, x509Obj);
+      X509_free (x509Obj);
+   }
+
+   CertCloseStore(cert_store, 0);
+   return true;
+}
+
+bool
+_mongoc_openssl_import_cert_stores (SSL_CTX *context)
+{
+    bool retval;
+    X509_STORE *store = SSL_CTX_get_cert_store (context);
+
+    if (!store) {
+       MONGOC_WARNING ("no X509 store found for SSL context while loading system certificates");
+       return false;
+    }
+
+    retval = _mongoc_openssl_import_cert_store (L"root", CERT_SYSTEM_STORE_CURRENT_USER, store);
+    if (retval) {
+       return retval;
+    }
+    return _mongoc_openssl_import_cert_store (L"CA", CERT_SYSTEM_STORE_CURRENT_USER, store);
+}
+#endif
 
 /** mongoc_openssl_hostcheck
  *
@@ -165,7 +227,7 @@ _mongoc_openssl_hostcheck (const char *pattern,
 bool
 _mongoc_openssl_check_cert (SSL        *ssl,
                             const char *host,
-                            bool weak_cert_validation)
+                            bool        allow_invalid_hostname)
 {
    X509 *peer;
    X509_NAME *subject_name;
@@ -188,7 +250,7 @@ _mongoc_openssl_check_cert (SSL        *ssl,
    BSON_ASSERT (ssl);
    BSON_ASSERT (host);
 
-   if (weak_cert_validation) {
+   if (allow_invalid_hostname) {
       return true;
    }
 
@@ -202,12 +264,11 @@ _mongoc_openssl_check_cert (SSL        *ssl,
    peer = SSL_get_peer_certificate (ssl);
 
    if (!peer) {
+      MONGOC_WARNING ("SSL Certification verification failed: %s", ERR_error_string(ERR_get_error(), NULL));
       return false;
    }
 
    verify_status = SSL_get_verify_result (ssl);
-
-   /** TODO: should we return this somehow? */
 
    if (verify_status == X509_V_OK) {
       /* get's a stack of alt names that we can iterate through */
@@ -255,7 +316,6 @@ _mongoc_openssl_check_cert (SSL        *ssl,
          subject_name = X509_get_subject_name (peer);
 
          if (subject_name) {
-            idx = -1;
             i = -1;
 
             /* skip to the last common name */
@@ -304,6 +364,7 @@ _mongoc_openssl_setup_ca (SSL_CTX    *ctx,
    BSON_ASSERT(cert || cert_dir);
 
    if (!SSL_CTX_load_verify_locations (ctx, cert, cert_dir)) {
+      MONGOC_ERROR ("Cannot load Certificate Authorities from '%s' and '%s'", cert, cert_dir);
       return 0;
    }
 
@@ -336,6 +397,7 @@ _mongoc_openssl_setup_pem_file (SSL_CTX    *ctx,
                                 const char *password)
 {
    if (!SSL_CTX_use_certificate_chain_file (ctx, pem_file)) {
+      MONGOC_ERROR ("Cannot find certificate in '%s'", pem_file);
       return 0;
    }
 
@@ -345,10 +407,12 @@ _mongoc_openssl_setup_pem_file (SSL_CTX    *ctx,
    }
 
    if (!(SSL_CTX_use_PrivateKey_file (ctx, pem_file, SSL_FILETYPE_PEM))) {
+      MONGOC_ERROR ("Cannot find private key in: '%s'", pem_file);
       return 0;
    }
 
    if (!(SSL_CTX_check_private_key (ctx))) {
+      MONGOC_ERROR ("Cannot load private key: '%s'", pem_file);
       return 0;
    }
 
@@ -368,6 +432,7 @@ SSL_CTX *
 _mongoc_openssl_ctx_new (mongoc_ssl_opt_t *opt)
 {
    SSL_CTX *ctx = NULL;
+   int ssl_ctx_options = 0;
 
    /*
     * Ensure we are initialized. This is safe to call multiple times.
@@ -378,42 +443,73 @@ _mongoc_openssl_ctx_new (mongoc_ssl_opt_t *opt)
 
    BSON_ASSERT (ctx);
 
-   /* SSL_OP_ALL - Activate all bug workaround options, to support buggy client SSL's.
-    * SSL_OP_NO_SSLv2 - Disable SSL v2 support */
-   SSL_CTX_set_options (ctx, (SSL_OP_ALL | SSL_OP_NO_SSLv2));
+   /* SSL_OP_ALL - Activate all bug workaround options, to support buggy client SSL's. */
+   ssl_ctx_options |= SSL_OP_ALL;
 
+   /* SSL_OP_NO_SSLv2 - Disable SSL v2 support */
+   ssl_ctx_options |= SSL_OP_NO_SSLv2;
+
+   /* Disable compression, if we can.
+    * OpenSSL 0.9.x added compression support which was always enabled when built against zlib
+    * OpenSSL 1.0.0 added the ability to disable it, while keeping it enabled by default
+    * OpenSSL 1.1.0 disabled it by default.
+    */
+#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+   ssl_ctx_options |= SSL_OP_NO_COMPRESSION;
+#endif
+
+   SSL_CTX_set_options (ctx, ssl_ctx_options);
+
+/* only defined in special build, using:
+ * --enable-system-crypto-profile (autotools)
+ * -DENABLE_CRYPTO_SYSTEM_PROFILE:BOOL=ON (cmake)  */
+#ifndef MONGOC_ENABLE_CRYPTO_SYSTEM_PROFILE
    /* HIGH - Enable strong ciphers
     * !EXPORT - Disable export ciphers (40/56 bit)
     * !aNULL - Disable anonymous auth ciphers
     * @STRENGTH - Sort ciphers based on strength */
    SSL_CTX_set_cipher_list (ctx, "HIGH:!EXPORT:!aNULL@STRENGTH");
+#endif
 
    /* If renegotiation is needed, don't return from recv() or send() until it's successful.
     * Note: this is for blocking sockets only. */
    SSL_CTX_set_mode (ctx, SSL_MODE_AUTO_RETRY);
 
-   /* TODO: does this cargo cult actually matter?
-    * Disable session caching (see SERVER-10261) */
-   SSL_CTX_set_session_cache_mode (ctx, SSL_SESS_CACHE_OFF);
-
-   /* Load in verification certs, private keys and revocation lists */
-   if ((!opt->pem_file ||
-        _mongoc_openssl_setup_pem_file (ctx, opt->pem_file, opt->pem_pwd))
-       && (!(opt->ca_file ||
-             opt->ca_dir) ||
-           _mongoc_openssl_setup_ca (ctx, opt->ca_file, opt->ca_dir))
-       && (!opt->crl_file || _mongoc_openssl_setup_crl (ctx, opt->crl_file))
-       ) {
-      return ctx;
-   } else {
+   /* Load my private keys to present to the server */
+   if (opt->pem_file &&
+         !_mongoc_openssl_setup_pem_file (ctx, opt->pem_file, opt->pem_pwd)) {
       SSL_CTX_free (ctx);
       return NULL;
    }
+
+   /* Load in my Certificate Authority, to verify the server against
+    * If none provided, fallback to the distro defaults */
+   if (opt->ca_file || opt->ca_dir) {
+      if (!_mongoc_openssl_setup_ca (ctx, opt->ca_file, opt->ca_dir)) {
+         SSL_CTX_free (ctx);
+         return NULL;
+      }
+   } else {
+      /* If the server certificate is issued by known CA we trust it by default */
+#ifdef _WIN32
+      _mongoc_openssl_import_cert_stores (ctx);
+#else
+      SSL_CTX_set_default_verify_paths (ctx);
+#endif
+   }
+
+   /* Load my revocation list, to verify the server against */
+   if (opt->crl_file && !_mongoc_openssl_setup_crl (ctx, opt->crl_file)) {
+      SSL_CTX_free (ctx);
+      return NULL;
+   }
+
+   return ctx;
 }
 
 
 char *
-_mongoc_openssl_extract_subject (const char *filename)
+_mongoc_openssl_extract_subject (const char *filename, const char *passphrase)
 {
    X509_NAME *subject = NULL;
    X509 *cert = NULL;
@@ -432,9 +528,9 @@ _mongoc_openssl_extract_subject (const char *filename)
    BSON_ASSERT (certbio);
    BSON_ASSERT (strbio);
 
-   BIO_read_filename (certbio, filename);
 
-   if ((cert = PEM_read_bio_X509 (certbio, NULL, 0, NULL))) {
+   if (BIO_read_filename (certbio, filename) &&
+         (cert = PEM_read_bio_X509 (certbio, NULL, 0, NULL))) {
       if ((subject = X509_get_subject_name (cert))) {
          ret = X509_NAME_print_ex (strbio, subject, 0, XN_FLAG_RFC2253);
 
@@ -461,6 +557,7 @@ _mongoc_openssl_extract_subject (const char *filename)
    return str;
 }
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 #ifdef _WIN32
 
 static unsigned long
@@ -530,5 +627,6 @@ _mongoc_openssl_thread_cleanup (void)
    }
    OPENSSL_free (gMongocOpenSslThreadLocks);
 }
+#endif
 
 #endif

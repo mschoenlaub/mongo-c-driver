@@ -15,14 +15,14 @@
  */
 
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
 #include "mongoc-config.h"
 #include <bson.h>
 
-#ifdef MONGOC_ENABLE_LIBCRYPTO
+#ifdef MONGOC_ENABLE_CRYPTO_LIBCRYPTO
 
 #ifndef MONGOC_CRYPTO_OPENSSL_PRIVATE_H
 #define MONGOC_CRYPTO_OPENSSL_PRIVATE_H
@@ -47,4 +47,4 @@ mongoc_crypto_openssl_sha1 (mongoc_crypto_t     *crypto,
 
 BSON_END_DECLS
 #endif /* MONGOC_CRYPTO_OPENSSL_PRIVATE_H */
-#endif /* MONGOC_ENABLE_LIBCRYPTO */
+#endif /* MONGOC_ENABLE_CRYPTO_LIBCRYPTO */

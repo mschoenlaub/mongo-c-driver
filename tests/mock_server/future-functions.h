@@ -68,6 +68,20 @@ future_collection_count (
 
 
 future_t *
+future_collection_count_with_opts (
+
+   mongoc_collection_ptr collection,
+   mongoc_query_flags_t flags,
+   const_bson_ptr query,
+   int64_t skip,
+   int64_t limit,
+   const_bson_ptr opts,
+   const_mongoc_read_prefs_ptr read_prefs,
+   bson_error_ptr error
+);
+
+
+future_t *
 future_collection_find_and_modify_with_opts (
 
    mongoc_collection_ptr collection,
@@ -90,6 +104,24 @@ future_collection_find_and_modify (
    bool upsert,
    bool _new,
    bson_ptr reply,
+   bson_error_ptr error
+);
+
+
+future_t *
+future_collection_find_indexes (
+
+   mongoc_collection_ptr collection,
+   bson_error_ptr error
+);
+
+
+future_t *
+future_collection_stats (
+
+   mongoc_collection_ptr collection,
+   const_bson_ptr options,
+   bson_ptr stats,
    bson_error_ptr error
 );
 
@@ -136,6 +168,17 @@ future_t *
 future_client_get_database_names (
 
    mongoc_client_ptr client,
+   bson_error_ptr error
+);
+
+
+future_t *
+future_database_command_simple (
+
+   mongoc_database_ptr database,
+   bson_ptr command,
+   const_mongoc_read_prefs_ptr read_prefs,
+   bson_ptr reply,
    bson_error_ptr error
 );
 
@@ -201,7 +244,6 @@ future_topology_select (
    mongoc_topology_ptr topology,
    mongoc_ss_optype_t optype,
    const_mongoc_read_prefs_ptr read_prefs,
-   int64_t local_threshold_ms,
    bson_error_ptr error
 );
 

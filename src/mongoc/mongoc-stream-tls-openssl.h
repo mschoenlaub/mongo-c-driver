@@ -21,17 +21,18 @@
 # error "Only <mongoc.h> can be included directly."
 #endif
 
-#ifdef MONGOC_ENABLE_OPENSSL
+#ifdef MONGOC_ENABLE_SSL_OPENSSL
 #include <bson.h>
 
 BSON_BEGIN_DECLS
 
 mongoc_stream_t *
 mongoc_stream_tls_openssl_new (mongoc_stream_t  *base_stream,
+                               const char       *host,
                                mongoc_ssl_opt_t *opt,
                                int               client);
 
 BSON_END_DECLS
 
-#endif /* MONGOC_ENABLE_OPENSSL */
+#endif /* MONGOC_ENABLE_SSL_OPENSSL */
 #endif /* MONGOC_STREAM_TLS_OPENSSL_H */

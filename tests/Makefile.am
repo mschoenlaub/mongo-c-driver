@@ -20,7 +20,6 @@ endif
 TEST_CFLAGS += \
 	-Wno-deprecated-declarations \
 	-DMONGOC_COMPILATION \
-	-DBINARY_DIR="\"$(abs_srcdir)/tests/binary\"" \
 	$(BSON_CFLAGS) \
 	$(SSL_CFLAGS) \
 	$(SASL_CFLAGS) \
@@ -28,6 +27,7 @@ TEST_CFLAGS += \
 	-I$(top_builddir)/src/mongoc
 
 TEST_LIBS = \
+        $(COVERAGE_LDFLAGS) \
 	libmongoc-priv.la \
 	$(PTHREAD_LIBS) \
 	$(SHM_LIB) \
@@ -104,13 +104,17 @@ test_libmongoc_SOURCES = \
 	tests/test-mongoc-command-monitoring.c \
 	tests/test-mongoc-cursor.c \
 	tests/test-mongoc-database.c \
+	tests/test-mongoc-error.c \
 	tests/test-mongoc-exhaust.c \
 	tests/test-mongoc-find-and-modify.c \
 	tests/test-mongoc-gridfs.c \
 	tests/test-mongoc-gridfs-file-page.c \
 	tests/test-mongoc-log.c \
+	tests/test-mongoc-linux-distro-scanner.c \
 	tests/test-mongoc-list.c \
 	tests/test-mongoc-matcher.c \
+	tests/test-mongoc-max-staleness.c \
+	tests/test-mongoc-metadata.c \
 	tests/test-mongoc-queue.c \
 	tests/test-mongoc-read-prefs.c \
 	tests/test-mongoc-rpc.c \
@@ -126,13 +130,14 @@ test_libmongoc_SOURCES = \
 	tests/test-mongoc-topology.c \
 	tests/test-mongoc-uri.c \
 	tests/test-mongoc-usleep.c \
+	tests/test-mongoc-util.c \
 	tests/test-mongoc-version.c \
 	tests/test-mongoc-write-concern.c \
 	tests/test-libmongoc.h \
-	tests/test-sasl.c \
 	tests/test-write-commands.c \
 	tests/TestSuite.c \
 	tests/TestSuite.h
+
 if ENABLE_SSL
 test_libmongoc_SOURCES += \
 	tests/test-x509.c \
@@ -140,6 +145,11 @@ test_libmongoc_SOURCES += \
 	tests/test-mongoc-stream-tls-error.c \
 	tests/ssl-test.c \
 	tests/ssl-test.h
+endif
+
+if ENABLE_SASL
+test_libmongoc_SOURCES += \
+	tests/test-sasl.c
 endif
 test_libmongoc_CFLAGS = $(TEST_CFLAGS)
 test_libmongoc_LDADD = $(TEST_LIBS)
@@ -153,27 +163,17 @@ test_sharded_cluster_SOURCES = \
 test_sharded_cluster_CFLAGS = $(TEST_CFLAGS)
 test_sharded_cluster_LDADD = $(TEST_LIBS)
 
-test_certs: tests/trust_dir/done
-
-tests/trust_dir/done: $(top_srcdir)/tests/make_ca.pl $(top_srcdir)/tests/trust_dir.cnf
-	PATH=$(top_srcdir)/tests:${PATH} $(top_srcdir)/tests/make_ca.pl $(top_builddir)/tests/trust_dir $(top_srcdir)/tests/trust_dir.cnf
-	touch $(top_builddir)/tests/trust_dir/done
-
 check: test abicheck
 
-TEST_ARGS = -f -p
+TEST_ARGS = "--no-fork"
 
-if ENABLE_SSL
-test: $(TEST_PROGS) test_certs
-else
 test: $(TEST_PROGS)
-endif
 	@ for TEST_PROG in $(TEST_PROGS) ; do \
 		./$$TEST_PROG $(TEST_ARGS) -F test-results.json; \
 	done
 
 valgrind: $(TEST_PROGS)
-	$(LIBTOOL) --mode=execute valgrind --leak-check=full --suppressions=$(srcdir)/valgrind.suppressions ./test-libmongoc $(TEST_ARGS)
+	MONGOC_TEST_VALGRIND=on $(LIBTOOL) --mode=execute valgrind --leak-check=full --suppressions=$(srcdir)/valgrind.suppressions ./test-libmongoc $(TEST_ARGS)
 
 if OS_LINUX
 abicheck:
@@ -186,51 +186,9 @@ endif
 local-check:
 
 DISTCLEANFILES += \
-	test-results.json \
-	tests/trust_dir/ca.db.serial \
-	tests/trust_dir/done \
-	tests/trust_dir/keys/rev.mongodb.com.pem \
-	tests/trust_dir/keys/mongodb.com.pem \
-	tests/trust_dir/keys/pass.mongodb.com.pem \
-	tests/trust_dir/keys/127.0.0.1.pem \
-	tests/trust_dir/keys/alt.mongodb.com.pem \
-	tests/trust_dir/ca.db.certs/01.pem \
-	tests/trust_dir/ca.db.certs/04.pem \
-	tests/trust_dir/ca.db.certs/05.pem \
-	tests/trust_dir/ca.db.certs/02.pem \
-	tests/trust_dir/ca.db.certs/03.pem \
-	tests/trust_dir/ca.db.index.attr \
-	tests/trust_dir/ca.db.index \
-	tests/trust_dir/build/mongodb.com.crt \
-	tests/trust_dir/build/127.0.0.1.req \
-	tests/trust_dir/build/mongodb.com.key \
-	tests/trust_dir/build/rev.mongodb.com.req \
-	tests/trust_dir/build/alt.mongodb.com.req \
-	tests/trust_dir/build/pass.mongodb.com.key \
-	tests/trust_dir/build/rev.mongodb.com.key \
-	tests/trust_dir/build/127.0.0.1.crt \
-	tests/trust_dir/build/pass.mongodb.com.req \
-	tests/trust_dir/build/rev.mongodb.com.crt \
-	tests/trust_dir/build/pass.mongodb.com.crt \
-	tests/trust_dir/build/mongodb.com.req \
-	tests/trust_dir/build/127.0.0.1.key \
-	tests/trust_dir/build/alt.mongodb.com.crt \
-	tests/trust_dir/build/alt.mongodb.com.key \
-	tests/trust_dir/verify/mongo_root.pem \
-	tests/trust_dir/verify/rev.mongodb.com.pem \
-	tests/trust_dir/verify/mongodb.com.pem \
-	tests/trust_dir/verify/pass.mongodb.com.pem \
-	tests/trust_dir/verify/127.0.0.1.pem \
-	tests/trust_dir/verify/alt.mongodb.com.pem \
-	tests/trust_dir/ca.db.index.old \
-	tests/trust_dir/ca.db.rand \
-	tests/trust_dir/signing-ca.key \
-	tests/trust_dir/signing-ca.crt \
-	tests/trust_dir/ca.db.index.attr.old \
-	tests/trust_dir/ca.db.serial.old \
-	tests/trust_dir/crl/root.crl.pem
+	test-results.json
 
-.PHONY: test_certs valgrind debug
+.PHONY: valgrind debug
 
 EXTRA_DIST += \
 	tests/abicheck.sh \
@@ -247,8 +205,6 @@ EXTRA_DIST += \
 	tests/binary/reply1.dat \
 	tests/binary/reply2.dat \
 	tests/binary/update1.dat \
-	tests/certificates/ca.pem \
-	tests/certificates/client.pem \
 	tests/mock_server/future-value.h \
 	tests/mock_server/future.c \
 	tests/mock_server/future.h \
@@ -262,9 +218,8 @@ EXTRA_DIST += \
 	tests/mock_server/sync-queue.h \
 	tests/mongoc-tests.c \
 	tests/mongoc-tests.h \
-	tests/trust_dir.cnf \
-	tests/make_ca.pl \
-	tests/c_rehash \
+	tests/x509gen/7750279a.0 \
+	$(wildcard tests/x509gen/*.pem) \
 	$(wildcard tests/json/command_monitoring/*.json) \
 	$(wildcard tests/json/server_discovery_and_monitoring/*/*.json) \
 	$(wildcard tests/json/server_selection/rtt/*.json) \
@@ -277,4 +232,4 @@ DEBUGGER = gdb --args
 endif
 
 debug: test-libmongoc
-	$(LIBTOOL) --mode=execute $(DEBUGGER) test-libmongoc $(TEST_ARGS) -f -p
+	$(LIBTOOL) --mode=execute $(DEBUGGER) test-libmongoc $(TEST_ARGS)

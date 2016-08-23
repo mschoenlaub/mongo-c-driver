@@ -21,10 +21,8 @@
 
 #include "mongoc-uri.h"
 
-#ifdef MONGOC_ENABLE_OPENSSL
-
+#ifdef MONGOC_ENABLE_SSL
 #include "mongoc-ssl.h"
-
 #endif
 
 #include "request.h"
@@ -40,6 +38,8 @@ mock_server_t *mock_server_new ();
 
 mock_server_t *mock_server_with_autoismaster (int32_t max_wire_version);
 
+mock_server_t *mock_mongos_new (int32_t max_wire_version);
+
 mock_server_t *mock_server_down (void);
 
 int mock_server_autoresponds (mock_server_t *server,
@@ -54,7 +54,7 @@ int mock_server_auto_ismaster (mock_server_t *server,
                                const char *response_json,
                                ...);
 
-#ifdef MONGOC_ENABLE_OPENSSL
+#ifdef MONGOC_ENABLE_SSL
 
 void mock_server_set_ssl_opts (mock_server_t *server,
                                mongoc_ssl_opt_t *opts);
@@ -85,6 +85,8 @@ void mock_server_set_rand_delay (mock_server_t *server,
                                  bool rand_delay);
 
 double mock_server_get_uptime_sec (mock_server_t *server);
+
+request_t *mock_server_receives_request (mock_server_t *server);
 
 request_t *mock_server_receives_command (mock_server_t *server,
                                          const char *database_name,
@@ -166,4 +168,4 @@ void mock_server_reply_multi (request_t           *request,
 
 void mock_server_destroy (mock_server_t *server);
 
-#endif //MOCK_SERVER_H
+#endif  /* MOCK_SERVER_H */

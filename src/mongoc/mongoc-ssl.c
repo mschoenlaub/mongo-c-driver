@@ -20,11 +20,17 @@
 
 #include <bson.h>
 #include "mongoc-ssl.h"
+#include "mongoc-ssl-private.h"
+#include "mongoc-log.h"
 
-#ifdef MONGOC_ENABLE_OPENSSL
+#if defined(MONGOC_ENABLE_SSL_OPENSSL)
 #  include "mongoc-openssl-private.h"
-#elif defined(MONGOC_ENABLE_SECURE_TRANSPORT)
+#elif defined(MONGOC_ENABLE_SSL_LIBRESSL)
+#  include "mongoc-libressl-private.h"
+#elif defined(MONGOC_ENABLE_SSL_SECURE_TRANSPORT)
 #  include "mongoc-secure-transport-private.h"
+#elif defined(MONGOC_ENABLE_SSL_SECURE_CHANNEL)
+#  include "mongoc-secure-channel-private.h"
 #endif
 
 /* TODO: we could populate these from a config or something further down the
@@ -51,14 +57,65 @@ mongoc_ssl_opt_get_default (void)
 }
 
 char *
-mongoc_ssl_extract_subject (const char *filename)
+mongoc_ssl_extract_subject (const char *filename, const char *passphrase)
 {
-#ifdef MONGOC_ENABLE_OPENSSL
-	return _mongoc_openssl_extract_subject (filename);
-#elif defined(MONGOC_ENABLE_SECURE_TRANSPORT)
-	return _mongoc_secure_transport_extract_subject (filename);
+   char *retval;
+
+   if (!filename) {
+      MONGOC_ERROR ("No filename provided to extract subject from");
+      return NULL;
+   }
+
+#ifdef _WIN32
+   if (_access (filename, 0) != 0) {
 #else
-#error "Can only extract X509 subjects using OpenSSL or Secure Transport"
+   if (access (filename, R_OK) != 0) {
 #endif
+      MONGOC_ERROR ("Can't extract subject from unreadable file: '%s'", filename);
+      return NULL;
+   }
+
+#if defined(MONGOC_ENABLE_SSL_OPENSSL)
+	retval = _mongoc_openssl_extract_subject (filename, passphrase);
+#elif defined(MONGOC_ENABLE_SSL_LIBRESSL)
+    MONGOC_WARNING ("libtls doesn't support automatically extracting subject from "
+                    "certificate to use with authentication");
+#elif defined(MONGOC_ENABLE_SSL_SECURE_TRANSPORT)
+	retval = _mongoc_secure_transport_extract_subject (filename, passphrase);
+#elif defined(MONGOC_ENABLE_SSL_SECURE_CHANNEL)
+	retval = _mongoc_secure_channel_extract_subject (filename, passphrase);
+#endif
+
+   if (!retval) {
+      MONGOC_ERROR ("Can't extract subject from file '%s'", filename);
+   }
+
+   return retval;
 }
+
+void _mongoc_ssl_opts_copy_to (const mongoc_ssl_opt_t* src,
+                               mongoc_ssl_opt_t* dst)
+{
+   BSON_ASSERT (src);
+   BSON_ASSERT (dst);
+
+   dst->pem_file = bson_strdup (src->pem_file);
+   dst->pem_pwd = bson_strdup (src->pem_pwd);
+   dst->ca_file = bson_strdup (src->ca_file);
+   dst->ca_dir = bson_strdup (src->ca_dir);
+   dst->crl_file = bson_strdup (src->crl_file);
+   dst->weak_cert_validation = src->weak_cert_validation;
+   dst->allow_invalid_hostname = src->allow_invalid_hostname;
+}
+
+void _mongoc_ssl_opts_cleanup (mongoc_ssl_opt_t* opt)
+{
+   bson_free ((char*)opt->pem_file);
+   bson_free ((char*)opt->pem_pwd);
+   bson_free ((char*)opt->ca_file);
+   bson_free ((char*)opt->ca_dir);
+   bson_free ((char*)opt->crl_file);
+}
+
+
 #endif

@@ -26,20 +26,7 @@
 #include "mongoc-ssl.h"
 #include "mongoc-stream.h"
 
-#ifdef MONGOC_ENABLE_OPENSSL
-#define MONGOC_TLS_TYPE 1
-#else
-/* FIXME: TLS through Secure Transport isn't implemented yet ! */
-#define MONGOC_TLS_TYPE 1
-#endif
-
 BSON_BEGIN_DECLS
-
-/* Available TLS Implementations */
-typedef enum
-{
-   MONGOC_TLS_OPENSSL = 1
-} mongoc_tls_types_t;
 
 /**
  * mongoc_stream_tls_t:
@@ -54,12 +41,11 @@ struct _mongoc_stream_tls_t
    mongoc_stream_t *base_stream; /* The underlying actual stream */
    void            *ctx;         /* TLS lib specific configuration or wrappers */
    int32_t          timeout_msec;
-   bool             weak_cert_validation;
-   bool (*do_handshake) (mongoc_stream_t *stream, int32_t     timeout_msec);
-   bool (*check_cert)   (mongoc_stream_t *stream, const char *host);
-   bool (*should_retry) (mongoc_stream_t *stream);
-   bool (*should_read)  (mongoc_stream_t *stream);
-   bool (*should_write) (mongoc_stream_t *stream);
+   mongoc_ssl_opt_t ssl_opts;
+   bool (*handshake)    (mongoc_stream_t *stream,
+                         const char      *host,
+                         int             *events /* OUT*/,
+                         bson_error_t    *error);
 };
 
 

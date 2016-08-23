@@ -17,7 +17,7 @@
 #ifndef MONGOC_CURSOR_CURSORID_PRIVATE_H
 #define MONGOC_CURSOR_CURSORID_PRIVATE_H
 
-#if !defined (MONGOC_I_AM_A_DRIVER) && !defined (MONGOC_COMPILATION)
+#if !defined (MONGOC_COMPILATION)
 #error "Only <mongoc.h> can be included directly."
 #endif
 
@@ -39,6 +39,7 @@ typedef struct
 } mongoc_cursor_cursorid_t;
 
 
+bool _mongoc_cursor_cursorid_start_batch    (mongoc_cursor_t  *cursor);
 bool _mongoc_cursor_cursorid_prime          (mongoc_cursor_t  *cursor);
 bool _mongoc_cursor_cursorid_next           (mongoc_cursor_t  *cursor,
                                              const bson_t    **bson);
@@ -46,7 +47,9 @@ void _mongoc_cursor_cursorid_init           (mongoc_cursor_t  *cursor,
                                              const bson_t     *command);
 bool _mongoc_cursor_prepare_getmore_command (mongoc_cursor_t  *cursor,
                                              bson_t           *command);
-
+void _mongoc_cursor_cursorid_init_with_reply (mongoc_cursor_t *cursor,
+                                              bson_t          *reply,
+                                              uint32_t         server_id);
 
 BSON_END_DECLS
 

@@ -20,32 +20,27 @@
 #include <bson.h>
 #include "mongoc-log.h"
 #include "mongoc-crypto-private.h"
-#ifdef MONGOC_ENABLE_LIBCRYPTO
-#include "mongoc-crypto-openssl-private.h"
-#elif defined(MONGOC_ENABLE_COMMON_CRYPTO)
-#include "mongoc-crypto-common-crypto-private.h"
+#if defined(MONGOC_ENABLE_CRYPTO_LIBCRYPTO)
+# include "mongoc-crypto-openssl-private.h"
+#elif defined(MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO)
+# include "mongoc-crypto-common-crypto-private.h"
+#elif defined(MONGOC_ENABLE_CRYPTO_CNG)
+# include "mongoc-crypto-cng-private.h"
 #endif
 
 void
 mongoc_crypto_init (mongoc_crypto_t *crypto)
 {
-   switch(MONGOC_CRYPTO_TYPE)
-   {
-#ifdef MONGOC_ENABLE_COMMON_CRYPTO
-      case MONGOC_CRYPTO_COMMON_CRYPTO:
-         crypto->hmac_sha1 = mongoc_crypto_common_crypto_hmac_sha1;
-         crypto->sha1 = mongoc_crypto_common_crypto_sha1;
-         break;
+#ifdef MONGOC_ENABLE_CRYPTO_LIBCRYPTO
+   crypto->hmac_sha1 = mongoc_crypto_openssl_hmac_sha1;
+   crypto->sha1 = mongoc_crypto_openssl_sha1;
+#elif defined(MONGOC_ENABLE_CRYPTO_COMMON_CRYPTO)
+   crypto->hmac_sha1 = mongoc_crypto_common_crypto_hmac_sha1;
+   crypto->sha1 = mongoc_crypto_common_crypto_sha1;
+#elif defined(MONGOC_ENABLE_CRYPTO_CNG)
+   crypto->hmac_sha1 = mongoc_crypto_cng_hmac_sha1;
+   crypto->sha1 = mongoc_crypto_cng_sha1;
 #endif
-#ifdef MONGOC_ENABLE_LIBCRYPTO
-      case MONGOC_CRYPTO_OPENSSL:
-         crypto->hmac_sha1 = mongoc_crypto_openssl_hmac_sha1;
-         crypto->sha1 = mongoc_crypto_openssl_sha1;
-         break;
-#endif
-      default:
-         MONGOC_ERROR("Unknown crypto engine");
-   }
 }
 
 void
