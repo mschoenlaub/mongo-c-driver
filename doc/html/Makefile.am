@@ -3,8 +3,11 @@ CLEANFILES += $(wildcard doc/html/*.css)
 CLEANFILES += $(wildcard doc/html/*.js)
 CLEANFILES += $(wildcard doc/html/*.png)
 
-html:
-	$(AM_V_GEN)$(YELP_BUILD) html -x build/libbson.xsl -o doc/html/ doc
+.PHONY: doc/html
+
+doc/html:
+	-mkdir -p doc/html
+	$(AM_V_GEN)$(YELP_BUILD) html -x $(top_srcdir)/build/libmongoc.xsl -o doc/html/ doc
 
 YELP_HTML_FILES = \
 	doc/html/C.css \
@@ -18,6 +21,6 @@ YELP_HTML_FILES = \
 	doc/html/yelp-note.png \
 	doc/html/yelp.js
 
-EXTRA_DIST += $(wildcard doc/html/*.html)
-EXTRA_DIST += $(wildcard doc/html/*.css)
-EXTRA_DIST += $(wildcard doc/html/*.js)
+EXTRA_DIST += doc/html
+EXTRA_DIST += $(YELP_HTML_FILES)
+

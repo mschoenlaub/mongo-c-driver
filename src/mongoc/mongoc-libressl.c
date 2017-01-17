@@ -21,9 +21,10 @@
 #include <bson.h>
 
 #include "mongoc-log.h"
-#include "mongoc-trace.h"
+#include "mongoc-trace-private.h"
 #include "mongoc-ssl.h"
 #include "mongoc-stream-tls.h"
+#include "mongoc-stream-tls-private.h"
 #include "mongoc-libressl-private.h"
 #include "mongoc-stream-tls-libressl-private.h"
 
@@ -35,7 +36,7 @@
 
 bool
 mongoc_libressl_setup_certificate (mongoc_stream_tls_libressl_t *libressl,
-                                   mongoc_ssl_opt_t             *opt)
+                                   mongoc_ssl_opt_t *opt)
 {
    uint8_t *file;
    size_t file_len;
@@ -44,13 +45,15 @@ mongoc_libressl_setup_certificate (mongoc_stream_tls_libressl_t *libressl,
       return false;
    }
 
-   file = tls_load_file (opt->pem_file, &file_len, opt->pem_pwd);
+   file = tls_load_file (opt->pem_file, &file_len, (char *) opt->pem_pwd);
    if (!file) {
       return false;
    }
 
-   if (tls_config_set_keypair_mem (libressl->config, file, file_len, file, file_len) == -1) {
-      MONGOC_ERROR("%s", tls_config_error (libressl->config));
+   if (tls_config_set_keypair_mem (
+          libressl->config, file, file_len, file, file_len) == -1) {
+      MONGOC_ERROR ("%s", tls_config_error (libressl->config));
+      return false;
    }
 
    return true;
@@ -58,7 +61,7 @@ mongoc_libressl_setup_certificate (mongoc_stream_tls_libressl_t *libressl,
 
 bool
 mongoc_libressl_setup_ca (mongoc_stream_tls_libressl_t *libressl,
-                          mongoc_ssl_opt_t             *opt)
+                          mongoc_ssl_opt_t *opt)
 {
    if (opt->ca_file) {
       tls_config_set_ca_file (libressl->config, opt->ca_file);

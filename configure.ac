@@ -39,12 +39,10 @@ m4_include([build/autotools/ReadCommandLineArguments.m4])
 m4_include([build/autotools/CheckSasl.m4])
 m4_include([build/autotools/CheckSSL.m4])
 m4_include([build/autotools/FindDependencies.m4])
-m4_include([build/autotools/AutoHarden.m4])
 m4_include([build/autotools/MaintainerFlags.m4])
 m4_include([build/autotools/PlatformFlags.m4])
 m4_include([build/autotools/Optimizations.m4])
 m4_include([build/autotools/Coverage.m4])
-m4_include([build/autotools/LDVersionScript.m4])
 m4_include([build/autotools/WeakSymbols.m4])
 m4_include([build/autotools/AutomaticInitAndCleanup.m4])
 
@@ -54,7 +52,6 @@ AC_SUBST(MONGOC_CC)
 # We would put AM_INIT_AUTOMAKE into SetupAutomake.m4, but seems to cause
 # autoconf errors.
 AM_INIT_AUTOMAKE([foreign subdir-objects tar-ustar])
-AM_MAINTAINER_MODE([enable])
 m4_include([build/autotools/SetupAutomake.m4])
 
 AC_CONFIG_FILES([

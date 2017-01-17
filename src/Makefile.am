@@ -14,6 +14,7 @@ noinst_LTLIBRARIES += libmongoc-priv.la
 MONGOC_CPPFLAGS_SHARED = \
 	-DMONGOC_COMPILATION \
 	$(LIBC_FEATURES) \
+	$(MAINTAINER_CFLAGS) \
 	$(OPTIMIZE_CFLAGS) \
 	$(COVERAGE_CFLAGS) \
 	-I$(top_srcdir)/src \
@@ -22,7 +23,9 @@ MONGOC_CPPFLAGS_SHARED = \
 	$(BSON_CFLAGS) \
 	$(PTHREAD_CFLAGS) \
 	$(SSL_CFLAGS) \
-	$(SASL_CFLAGS)
+	$(SASL_CFLAGS) \
+	-fvisibility=hidden
+
 if OS_SOLARIS
 MONGOC_CPPFLAGS_SHARED += -D_REENTRANT
 endif
@@ -40,18 +43,13 @@ libmongoc_1_0_la_LDFLAGS = \
 	-no-undefined \
 	-rpath $(libdir)
 
-if HAVE_LD_VERSION_SCRIPT
-libmongoc_1_0_la_LDFLAGS += -Wl,--version-script=$(srcdir)/build/autotools/versions.ldscript
-else
-libmongoc_1_0_la_LDFLAGS += -export-symbols-regex "^mongoc_"
-endif
-
 MONGOC_LIBADD_SHARED = \
 	$(BSON_LIBS) \
 	$(PTHREAD_LIBS) \
 	$(SHM_LIB) \
 	$(SSL_LIBS) \
 	$(SASL_LIBS)
+
 if OS_WIN32
 MONGOC_LIBADD_SHARED += -lws2_32
 endif
@@ -69,7 +67,5 @@ include src/mongoc/Makefile.am
 include src/tools/Makefile.am
 
 EXTRA_DIST += \
-	src/libmongoc.symbols \
-	build/autotools/versions.ldscript \
 	src/libmongoc-1.0.pc.in \
 	src/libmongoc-ssl-1.0.pc.in

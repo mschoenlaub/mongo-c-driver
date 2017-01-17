@@ -110,9 +110,6 @@ and the existing codes or domains are inappropriate.
 This should be done rarely but there are several things that you need to do
 when adding a new symbol.
 
- - Add the symbol to `src/libmongoc.symbols`
- - Add the symbol to `build/autotools/versions.ldscript`
- - Add the symbol to all the `.def` files in `build/cmake/`.
  - Add documentation for the new symbol in `doc/mongoc_your_new_symbol_name.page`
 
 ### Documentation
@@ -158,8 +155,10 @@ Additional environment variables:
 * `MONGOC_TEST_PORT`: default 27017, MongoDB's listening port.
 * `MONGOC_TEST_URI`: override both host and port with a full connection string,
   like "mongodb://server1,server2".
-* `MONGOC_TEST_SERVER_VERBOSE`: set to `on` for wire protocol logging from
-  tests that use `mock_server_t`. 
+* `MONGOC_TEST_SERVER_LOG`: set to `stdout` or `stderr` for wire protocol 
+  logging from tests that use `mock_server_t`. Set to `json` to include these
+  logs in the test framework's JSON output, in a format compatible with
+  [Evergreen](https://github.com/evergreen-ci/evergreen).
 * `MONGOC_TEST_MONITORING_VERBOSE`: set to `on` for verbose output from
   Application Performance Monitoring tests.
 
@@ -209,6 +208,10 @@ Some tests require Internet access, e.g. to check the error message when failing
 to open a MongoDB connection to example.com. Skip them with:
 
 * `MONGOC_TEST_OFFLINE=on`
+
+Some tests require a running MongoDB server. Skip them with:
+
+* `MONGOC_TEST_SKIP_LIVE=on`
 
 For quick checks during development, disable long-running tests:
 
